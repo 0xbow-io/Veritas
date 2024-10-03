@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "circom_ffi",
+    "parser",
+    "program_structure",
+    "type_analysis",
+    "compiler",
+    "constant_tracking",
+    "code_producers",
+    "circom_algebra",
+    "constraint_writers",
+    "constraint_generation",
+    "constraint_list",
+    "dag"
+]

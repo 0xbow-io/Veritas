@@ -1,0 +1,10 @@
+[package]
+name = "constraint_writers"
+version = "2.1.8"
+authors = ["Costa Group UCM","iden3"]
+edition = "2018"
+
+[dependencies]
+circom_algebra = { path = "../circom_algebra" }
+json = "0.12.4"
+serde = { version = "1.0", features = ["derive"] }

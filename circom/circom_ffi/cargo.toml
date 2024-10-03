@@ -1,0 +1,45 @@
+[package]
+name = "circom_ffi"
+version = "2.1.9"
+authors = ["0xbow.io"]
+edition = "2018"
+##build = "build.rs"
+
+
+[lib]
+crate-type = ["staticlib"]
+
+[build-dependencies]
+rustc-hex = "2.0.1"
+num-bigint = { version = "=0.4.6", default-features = false, features = ["rand"] }
+num-traits = "0.2.19"
+
+[dependencies]
+program_structure = {path = "../program_structure"}
+parser = {path = "../parser"}
+type_analysis = {path = "../type_analysis"}
+compiler = {path = "../compiler"}
+circom_algebra = {path = "../circom_algebra"}
+constraint_writers = {path = "../constraint_writers"}
+constraint_generation = {path = "../constraint_generation"}
+code_producers = {path = "../code_producers"}
+dag = {path = "../dag"}
+ansi_term = "0.12.1"
+codespan = "0.11.1"
+codespan-reporting = { version = "0.11.1", features = ["serialization"] }
+regex = "1.1.2"
+rustc-hex = "2.0.1"
+serde = "1.0.210"
+serde_derive = "1.0.210"
+indoc = "2"
+serde_json = "1.0.128"
+lazy_static = "1.4.0"
+wasmer = "4.3.7"
+wasmer-wasix = { version = "0.27.0"}
+thiserror = "=1.0.39"
+num = "0.4.3"
+num-bigint = { version = "=0.4.6", default-features = false, features = ["rand"] }
+num-traits = "0.2.19"
+fnv = "1.0.7"
+tokio = { version = "=1.40.0", features = ["macros"] }
+jsonbb  = "0.1.0"
