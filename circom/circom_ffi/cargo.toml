@@ -3,8 +3,6 @@ name = "circom_ffi"
 version = "2.1.9"
 authors = ["0xbow.io"]
 edition = "2018"
-##build = "build.rs"
-
 
 [lib]
 crate-type = ["staticlib"]
