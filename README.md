@@ -36,7 +36,6 @@ Our intention is to promote the use of Circom DSL
 for the development & innovation of zk-SNARKs circuits and to provide
 Developers with a seamless workflow for engineering secure circuits.
 
-
 ## How to Use:
 
 See the examples found in the `examples` directory.
@@ -87,25 +86,44 @@ func Test_Circuit(t *testing.T) {
 	circuit.Release()
 }
 ```
+
+## Build Locally:
+
+Checkout the Makefile for more details.
+
+**_To compile the circom ffi bindings, run:_**
+
+```bash
+make ffi
+```
+
+**_To clean artifacts, run:_**
+
+```bash
+make clean
+```
+
 ## TODO:
 
-- [] Refactor & Clean up the code.
-- [] Add more tests / examples.
-- [] Build for different target Archs.
-- [] Add Constraint Analysis & Optimisation.
-- [] Support Formal Verification Tools.
-- [] Support for Folding Schemes Applications (i.e Sonobe integration).
+-   [ ] Refactor & Clean up the code.
+-   [ ] Add more tests / examples.
+-   [ ] Add Constraint Analysis & Optimisations.
+-   [ ] Support Formal Verification Tools.
+-   [ ] Support for Folding Schemes Applications (i.e Sonobe integration).
 
 ## How to Contribute:
 
+Submit a PR with your changes.
+We will prioritise those that align with the TODO list or is a critical bug fix.
+See CONTRIBUTING.md for more details.
 
-
+All contributions are welcome and contributers will be credited & recognised.
 
 ## Acknolwedgements:
 
 Wouldn't be possible without the achievements of the following projects:
 
-- [Iden3 Circom]()
-- [Costa Group UCM Civer]()
-- [Circomspect]()
-- [Arkwork]()
+-   [Iden3 Circom]()
+-   [Costa Group UCM Civer]()
+-   [Circomspect]()
+-   [Arkwork]()

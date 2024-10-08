@@ -1,0 +1,49 @@
+name: Compile FFI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    build:
+        strategy:
+            matrix:
+                os: [ubuntu-latest, macos-latest]
+                include:
+                    - os: ubuntu-latest
+                      rust_target: x86_64-unknown-linux-gnu
+                    - os: macos-latest
+                      rust_target: x86_64-apple-darwin
+        runs-on: ${{ matrix.os }}
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Set up Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  toolchain: stable
+                  target: ${{ matrix.rust_target }}
+                  override: true
+
+            - name: Compile FFI Bindings
+              run: make ffi
+
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v2
+              with:
+                  name: ${{ matrix.os }}-artifacts
+                  path: include
+
+            - name: Commit and push if changed
+              run: |
+                  git config --local user.email "action@github.com"
+                  git config --local user.name "GitHub Action"
+                  git add include
+                  git commit -m "Update artifacts" -a || echo "No changes to commit"
+                  git push

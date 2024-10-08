@@ -1,8 +1,7 @@
-all:
-	cargo build --release
+all: build
 
-debug:
-	cargo build
+build:
+	cargo build --release
 
 check:
 	cargo check --release
