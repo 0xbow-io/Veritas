@@ -174,6 +174,13 @@ pub enum Definition {
         arg_location: ProgramLocation,
         body: Statement,
     },
+    Bus {
+        meta: Meta,
+        name: String,
+        args: Vec<String>,
+        arg_location: FileLocation,
+        body: Statement,
+    },
 }
 pub fn build_template(
     meta: Meta,
@@ -209,6 +216,16 @@ pub fn build_function(
         arg_location,
         body,
     }
+}
+
+pub fn build_bus(
+    meta: Meta,
+    name: String,
+    args: Vec<String>,
+    arg_location: FileLocation,
+    body: Statement,
+) -> Definition {
+    Definition::Bus { meta, name, args, arg_location, body }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -286,12 +303,13 @@ pub enum SignalType {
 
 pub type TagList = Vec<String>;
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Ord, PartialOrd, Eq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum VariableType {
     Var,
     Signal(SignalType, TagList),
     Component,
     AnonymousComponent,
+    Bus(String, SignalType, TagList),
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -324,6 +342,11 @@ pub enum Expression {
     },
     Number(Meta, BigInt),
     Call {
+        meta: Meta,
+        id: String,
+        args: Vec<Expression>,
+    },
+    BusCall {
         meta: Meta,
         id: String,
         args: Vec<Expression>,
@@ -402,10 +425,11 @@ pub enum ExpressionPrefixOpcode {
 
 // Knowledge buckets
 
-#[derive(Serialize, Deserialize, Copy, Clone, PartialOrd, PartialEq, Ord, Eq)]
+#[derive(Serialize, Deserialize, Clone, PartialOrd, PartialEq, Ord, Eq)]
 pub enum TypeReduction {
     Variable,
-    Component,
+    Component(Option<String>),
+    Bus(Option<String>),
     Signal,
     Tag,
 }
@@ -435,7 +459,7 @@ impl TypeKnowledge {
     }
     pub fn get_reduces_to(&self) -> TypeReduction {
         if let Option::Some(t) = &self.reduces_to {
-            *t
+            t.clone()
         } else {
             panic!("reduces_to knowledge is been look at without being initialized");
         }
@@ -443,14 +467,30 @@ impl TypeKnowledge {
     pub fn is_var(&self) -> bool {
         self.get_reduces_to() == TypeReduction::Variable
     }
+    pub fn is_initialized(&self) -> bool {
+        if let Option::Some(_) = &self.reduces_to {
+            true
+        } else {
+            false
+        }
+    }
     pub fn is_component(&self) -> bool {
-        self.get_reduces_to() == TypeReduction::Component
+        if let TypeReduction::Component(_) = self.get_reduces_to()  {
+            true
+   } else { false }
     }
     pub fn is_signal(&self) -> bool {
         self.get_reduces_to() == TypeReduction::Signal
     }
     pub fn is_tag(&self) -> bool {
         self.get_reduces_to() == TypeReduction::Tag
+    }
+    pub fn is_bus(&self) -> bool {
+        if let TypeReduction::Bus(_) = self.get_reduces_to()  {
+            true
+        } else { 
+            false 
+        }
     }
 }
 #[derive(Default, Clone, Serialize, Deserialize)]

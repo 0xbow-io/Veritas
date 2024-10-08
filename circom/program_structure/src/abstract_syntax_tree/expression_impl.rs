@@ -14,10 +14,11 @@ impl Expression {
             | Number(meta, ..)
             | Call { meta, .. }
             | AnonymousComp { meta, .. }
-            | ArrayInLine { meta, .. } => meta,
-            UniformArray { meta, .. } => meta,
-            Tuple { meta, .. } => meta,
-            Default {} => panic!("Default expression has no meta data"),
+            | ArrayInLine { meta, .. }
+            | UniformArray { meta, .. }
+            | Tuple {meta, ..}
+            | BusCall { meta, .. } => meta,
+            Default {} => panic!("Default expression has no meta data"), //NOTE: Default does not exist in the original code: https://github.com/iden3/circom/blob/v2.2.0/program_structure/src/abstract_syntax_tree/expression_impl.rs
         }
     }
     pub fn get_mut_meta(&mut self) -> &mut Meta {
@@ -31,10 +32,11 @@ impl Expression {
             | Number(meta, ..)
             | Call { meta, .. }
             | AnonymousComp { meta, .. }
-            | ArrayInLine { meta, .. } => meta,
-            UniformArray { meta, .. } => meta,
-            Tuple { meta, .. } => meta,
-            Default {} => panic!("Default expression has no meta data"),
+            | ArrayInLine { meta, .. }
+            | UniformArray { meta, .. }
+            | Tuple {meta, ..}
+            | BusCall {meta, ..} => meta,
+            Default {} => panic!("Default expression has no meta data"), //NOTE: Default does not exist in the original code: (see above)
         }
     }
 
@@ -120,6 +122,26 @@ impl Expression {
         }
     }
 
+    pub fn is_bus_call(&self) -> bool {
+        use Expression::*;
+        if let BusCall { .. } = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn is_bus_call_array(&self) -> bool {
+        use Expression::*;
+        if let BusCall { .. } = self {
+            true
+        } else if let UniformArray { value, .. } = self {
+            value.is_bus_call_array()
+        } else {
+            false
+        }
+    }
+
     pub fn is_anonymous_comp(&self) -> bool {
         use Expression::*;
         if let AnonymousComp { .. } = self {
@@ -163,15 +185,15 @@ impl Expression {
                 cond.contains_anonymous_comp()
                     || if_true.contains_anonymous_comp()
                     || if_false.contains_anonymous_comp()
-            }
-            Call { args, .. } | Tuple { values: args, .. } | ArrayInLine { values: args, .. } => {
+            },
+            BusCall { args, .. } | Call { args, .. } | Tuple {values: args, ..} | ArrayInLine {  values : args, .. } => {
                 for arg in args {
                     if arg.contains_anonymous_comp() {
                         return true;
                     }
                 }
                 false
-            }
+            },
             AnonymousComp { .. } => true,
             Variable { access, .. } => {
                 for ac in access {
@@ -208,14 +230,15 @@ impl Expression {
                 if_false,
                 ..
             } => cond.contains_tuple() || if_true.contains_tuple() || if_false.contains_tuple(),
-            Call { args, .. } | ArrayInLine { values: args, .. } => {
+            //note: InlineSwitchOp and PrefixOp appears to be written slightly differently with the "{" (https://github.com/iden3/circom/blob/9fd40a34f42912ee52230f8b6a114d78f6df1a48/program_structure/src/abstract_syntax_tree/expression_impl.rs#L206)
+            BusCall{ args, .. } | Call { args, .. } | ArrayInLine {  values : args, .. } => {
                 for arg in args {
                     if arg.contains_tuple() {
                         return true;
                     }
                 }
                 false
-            }
+            },
             AnonymousComp {
                 params, signals, ..
             } => {
@@ -271,6 +294,7 @@ impl FillMeta for Expression {
                 ..
             } => fill_inline_switch_op(meta, cond, if_true, if_false, program_id, element_id),
             Call { meta, args, .. } => fill_call(meta, args, program_id, element_id),
+            BusCall { meta, args, .. } => fill_call(meta, args, file_id, element_id),
             ArrayInLine { meta, values, .. } => {
                 fill_array_inline(meta, values, program_id, element_id)
             }

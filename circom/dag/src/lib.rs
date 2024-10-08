@@ -192,7 +192,7 @@ impl Node {
         id: usize,
         template_name: String,
         parameters: Vec<BigInt>,
-        ordered_signals: Vec<String>,
+        //ordered_signals: Vec<String>,
         is_parallel: bool,
         is_custom_gate: bool,
     ) -> Node {
@@ -201,7 +201,7 @@ impl Node {
             entry: Edge::new_entry(id),
             parameters,
             number_of_components: 1,
-            ordered_signals,
+            //ordered_signals,
             is_parallel,
             has_parallel_sub_cmp: false,
             is_custom_gate,
@@ -245,6 +245,10 @@ impl Node {
         self.number_of_signals += 1;
         self.entry.out_number += 1;
         self.intermediates_length += 1;
+    }
+
+    fn add_ordered_signal(&mut self, name: String){
+        self.ordered_signals.push(name);
     }
 
     fn add_constraint(&mut self, constraint: Constraint) {
@@ -405,19 +409,13 @@ impl DAG {
         &mut self,
         template_name: String,
         parameters: Vec<BigInt>,
-        ordered_signals: Vec<String>,
+        //ordered_signals: Vec<String>,
         is_parallel: bool,
         is_custom_gate: bool,
     ) -> usize {
         let id = self.nodes.len();
-        self.nodes.push(Node::new(
-            id,
-            template_name,
-            parameters,
-            ordered_signals,
-            is_parallel,
-            is_custom_gate,
-        ));
+        
+        self.nodes.push(Node::new(id, template_name, parameters, is_parallel, is_custom_gate));
         self.adjacency.push(vec![]);
         id
     }
@@ -437,6 +435,12 @@ impl DAG {
     pub fn add_intermediate(&mut self, name: String) {
         if let Option::Some(node) = self.get_mut_main() {
             node.add_intermediate(name);
+        }
+    }
+
+    pub fn add_ordered_signal(&mut self, name: String) {
+        if let Option::Some(node) = self.get_mut_main() {
+            node.add_ordered_signal(name);
         }
     }
 

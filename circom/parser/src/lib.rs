@@ -7,6 +7,8 @@ extern crate serde_derive;
 mod parser_logic;
 mod syntax_sugar_remover;
 
+use num_bigint::BigInt;
+
 pub mod common;
 pub mod parser;
 

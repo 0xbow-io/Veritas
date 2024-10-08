@@ -682,7 +682,7 @@ dependencies = [
 
 [[package]]
 name = "dag"
-version = "2.1.8"
+version = "2.2.0"
 dependencies = [
  "circom_algebra",
  "constraint_list",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "parser"
-version = "2.1.9"
+version = "2.2.0"
 dependencies = [
  "codespan 0.9.5",
  "codespan-reporting 0.9.5",
