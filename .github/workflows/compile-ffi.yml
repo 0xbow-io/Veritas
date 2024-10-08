@@ -25,7 +25,7 @@ jobs:
                   fetch-depth: 0
 
             - name: Set up Rust
-              uses: actions-rs/toolchain@v1
+              uses: dtolnay/rust-toolchain@stable
               with:
                   toolchain: stable
                   target: ${{ matrix.rust_target }}
@@ -35,7 +35,7 @@ jobs:
               run: make ffi
 
             - name: Upload artifacts
-              uses: actions/upload-artifact@v2
+              uses: actions/upload-artifact@v4
               with:
                   name: ${{ matrix.os }}-artifacts
                   path: include

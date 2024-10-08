@@ -8,3 +8,4 @@ program_structure/target/
 type_analysis/target/
 .DS_Store
 temp/
+include/
