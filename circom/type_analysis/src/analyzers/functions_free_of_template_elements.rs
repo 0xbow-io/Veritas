@@ -243,6 +243,16 @@ fn analyse_expression(
             analyse_expression(value, function_names, reports);
             analyse_expression(dimension, function_names, reports);
         }
+        BusCall { meta, .. } => {
+            let mut report = Report::error(
+                "Template elements declared inside the function".to_string(),
+                ReportCode::UndefinedFunction,
+            );
+            let location =
+                file_definition::generate_file_location(meta.get_start(), meta.get_end());
+            report.add_primary(location, file_id, "Declaring template element".to_string());
+            reports.push(report);
+        },
         _ => {
             unreachable!("Anonymous calls should not be reachable at this point.");
         }

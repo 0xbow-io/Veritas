@@ -1,11 +1,12 @@
-use program_structure::ast::{Access, Expression, LogArgument, Meta, Statement};
+use program_structure::ast::{Access, Expression, LogArgument, Meta, Statement, VariableType};
 use program_structure::error_code::ReportCode;
 use program_structure::error_definition::{Report, ReportCollection};
-use program_structure::function_data::FunctionInfo;
 use program_structure::program_archive::{
     generate_program_location, ProgramArchive, ProgramID, ProgramLocation,
 };
+use program_structure::function_data::FunctionInfo;
 use program_structure::template_data::TemplateInfo;
+use program_structure::bus_data::BusInfo;
 use std::collections::HashSet;
 type Block = HashSet<String>;
 type Environment = Vec<Block>;
@@ -13,6 +14,7 @@ type Environment = Vec<Block>;
 pub fn check_naming_correctness(program_library: &ProgramArchive) -> Result<(), ReportCollection> {
     let template_info = program_library.get_templates();
     let function_info = program_library.get_functions();
+    let bus_info = program_library;
     let mut reports = ReportCollection::new();
     let mut instances = Vec::new();
     for (_, data) in template_info {
@@ -33,6 +35,16 @@ pub fn check_naming_correctness(program_library: &ProgramArchive) -> Result<(), 
         );
         instances.push(instance);
     }
+    for (_, data) in bus_info {
+        let instance = (
+            data.get_file_id(),
+            data.get_param_location(),
+            data.get_name_of_params(),
+            data.get_body_as_vec(),
+        );
+        instances.push(instance);
+    }
+    //note: slightly different implementation, note the "program library" (https://github.com/iden3/circom/blob/9fd40a34f42912ee52230f8b6a114d78f6df1a48/type_analysis/src/analyzers/symbol_analysis.rs#L46)
     if let Err(mut r) = analyze_main(program_library) {
         reports.append(&mut r);
     }
@@ -44,6 +56,7 @@ pub fn check_naming_correctness(program_library: &ProgramArchive) -> Result<(), 
             body,
             function_info,
             template_info,
+            bus_info,
         );
         if let Result::Err(mut r) = res {
             reports.append(&mut r);
@@ -61,6 +74,7 @@ fn analyze_main(program: &ProgramArchive) -> Result<(), Vec<Report>> {
     let signals = program.get_public_inputs_main_component();
     let template_info = program.get_templates();
     let function_info = program.get_functions();
+    let bus_info = program.get_buses();
 
     let mut reports = vec![];
     if let Expression::Call { id, .. } = call {
@@ -88,6 +102,7 @@ fn analyze_main(program: &ProgramArchive) -> Result<(), Vec<Report>> {
         call.get_meta().get_program_id(),
         function_info,
         template_info,
+        bus_info,
         &mut reports,
         &environment,
     );
@@ -106,6 +121,7 @@ pub fn analyze_symbols(
     body: &[Statement],
     function_info: &FunctionInfo,
     template_info: &TemplateInfo,
+    bus_info: &BusInfo,
 ) -> Result<(), ReportCollection> {
     let mut param_name_collision = false;
     let mut reports = ReportCollection::new();
@@ -133,6 +149,7 @@ pub fn analyze_symbols(
             program_id,
             function_info,
             template_info,
+            bus_info,
             &mut reports,
             &mut environment,
         );
@@ -167,28 +184,15 @@ fn analyze_statement(
     program_id: ProgramID,
     function_info: &FunctionInfo,
     template_info: &TemplateInfo,
+    bus_info: &BusInfo,
     reports: &mut ReportCollection,
     environment: &mut Environment,
 ) {
     match stmt {
         Statement::MultSubstitution { .. } => unreachable!(),
-        Statement::Return { value, .. } => analyze_expression(
-            value,
-            program_id,
-            function_info,
-            template_info,
-            reports,
-            environment,
-        ),
+        Statement::Return { value, .. } => analyze_expression(value, program_id, function_info, template_info, bus_info, reports, environment),
         Statement::UnderscoreSubstitution { rhe, .. } => {
-            analyze_expression(
-                rhe,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+            analyze_expression(rhe, program_id, function_info, template_info, bus_info, reports, environment);
         }
         Statement::Substitution {
             meta,
@@ -197,14 +201,7 @@ fn analyze_statement(
             rhe,
             ..
         } => {
-            analyze_expression(
-                rhe,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+            analyze_expression(rhe, program_id, function_info, template_info, bus_info, reports, environment);
             treat_variable(
                 meta,
                 var,
@@ -212,27 +209,14 @@ fn analyze_statement(
                 program_id,
                 function_info,
                 template_info,
+                bus_info,
                 reports,
                 environment,
             );
         }
         Statement::ConstraintEquality { lhe, rhe, .. } => {
-            analyze_expression(
-                lhe,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
-            analyze_expression(
-                rhe,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+            analyze_expression(lhe, program_id, function_info, template_info, bus_info, reports, environment);
+            analyze_expression(rhe, program_id, function_info, template_info, bus_info, reports, environment);
         }
         Statement::InitializationBlock {
             initializations, ..
@@ -243,23 +227,20 @@ fn analyze_statement(
                     program_id,
                     function_info,
                     template_info,
+                    bus_info,
                     reports,
                     environment,
                 );
             }
         }
-        Statement::Declaration {
-            meta,
-            name,
-            dimensions,
-            ..
-        } => {
+        Statement::Declaration { meta, name, dimensions, xtype, .. } => {
             for index in dimensions {
                 analyze_expression(
                     index,
                     program_id,
                     function_info,
                     template_info,
+                    bus_info,
                     reports,
                     environment,
                 );
@@ -276,29 +257,33 @@ fn analyze_statement(
                 );
                 reports.push(report);
             }
+            if let VariableType::Bus(b_name,_,tags ) = xtype {
+                if let Some(bus) = bus_info.get(b_name) {
+                    for t in tags {
+                         if bus.get_fields().contains_key(t) {
+                            let mut report = Report::error(
+                                format!("Declaring same symbol twice"),
+                                ReportCode::SameSymbolDeclaredTwice,
+                            );
+                            report.add_primary(
+                                meta.location.clone(),
+                                program_id.clone(),
+                                format!("This tag name is also a field name in the bus."),
+                            );
+                            reports.push(report);
+                         }
+                    }
+                }
+            }
         }
         Statement::LogCall { args, .. } => {
             for logarg in args {
                 if let LogArgument::LogExp(arg) = logarg {
-                    analyze_expression(
-                        arg,
-                        program_id,
-                        function_info,
-                        template_info,
-                        reports,
-                        environment,
-                    );
+                    analyze_expression(arg, program_id, function_info, template_info, bus_info, reports, environment);
                 }
             }
         }
-        Statement::Assert { arg, .. } => analyze_expression(
-            arg,
-            program_id,
-            function_info,
-            template_info,
-            reports,
-            environment,
-        ),
+        Statement::Assert { arg, .. } => analyze_expression(arg, program_id, function_info, template_info, bus_info, reports, environment),
         Statement::Block { stmts, .. } => {
             environment.push(Block::new());
             for block_stmt in stmts.iter() {
@@ -307,6 +292,7 @@ fn analyze_statement(
                     program_id,
                     function_info,
                     template_info,
+                    bus_info,
                     reports,
                     environment,
                 );
@@ -314,22 +300,8 @@ fn analyze_statement(
             environment.pop();
         }
         Statement::While { stmt, cond, .. } => {
-            analyze_expression(
-                cond,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
-            analyze_statement(
-                stmt,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+            analyze_expression(cond, program_id, function_info, template_info, bus_info, reports, environment);
+            analyze_statement(stmt, program_id, function_info, template_info, bus_info, reports, environment);
         }
         Statement::IfThenElse {
             cond,
@@ -337,28 +309,15 @@ fn analyze_statement(
             else_case,
             ..
         } => {
-            analyze_expression(
-                cond,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
-            analyze_statement(
-                if_case,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+            analyze_expression(cond, program_id, function_info, template_info, bus_info, reports, environment);
+            analyze_statement(if_case, program_id, function_info, template_info, bus_info, reports, environment);
             if let Option::Some(else_stmt) = else_case {
                 analyze_statement(
                     else_stmt,
                     program_id,
                     function_info,
                     template_info,
+                    bus_info,
                     reports,
                     environment,
                 );
@@ -374,6 +333,7 @@ fn treat_variable(
     program_id: ProgramID,
     function_info: &FunctionInfo,
     template_info: &TemplateInfo,
+    bus_info: &BusInfo,
     reports: &mut ReportCollection,
     environment: &Environment,
 ) {
@@ -387,15 +347,11 @@ fn treat_variable(
         reports.push(report);
     }
     for acc in access.iter() {
-        if let Access::ArrayAccess(index) = acc {
-            analyze_expression(
-                index,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+        match acc {
+            Access::ArrayAccess(index) => {
+                analyze_expression(index, program_id, function_info, template_info, bus_info, reports, environment);
+            }
+            Access::ComponentAccess(_) => {}
         }
     }
 }
@@ -405,43 +361,32 @@ fn analyze_expression(
     program_id: ProgramID,
     function_info: &FunctionInfo,
     template_info: &TemplateInfo,
+    bus_info: &BusInfo,
     reports: &mut ReportCollection,
     environment: &Environment,
 ) {
     match expression {
         Expression::InfixOp { lhe, rhe, .. } => {
-            analyze_expression(
-                lhe,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
-            analyze_expression(
-                rhe,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
-            );
+            analyze_expression(lhe, program_id, function_info, template_info, bus_info, reports, environment);
+            analyze_expression(rhe, program_id, function_info, template_info, bus_info, reports, environment);
         }
         Expression::PrefixOp { rhe, .. } => analyze_expression(
-            rhe,
-            program_id,
-            function_info,
-            template_info,
-            reports,
-            environment,
+            rhe, 
+            program_id, 
+            function_info, 
+            template_info, 
+            bus_info, 
+            reports, 
+            environment
         ),
         Expression::ParallelOp { rhe, .. } => analyze_expression(
-            rhe,
-            program_id,
-            function_info,
-            template_info,
-            reports,
-            environment,
+            rhe, 
+            program_id, 
+            function_info, 
+            template_info, 
+            bus_info, 
+            reports, 
+            environment
         ),
         Expression::InlineSwitchOp {
             cond,
@@ -450,18 +395,20 @@ fn analyze_expression(
             ..
         } => {
             analyze_expression(
-                cond,
-                program_id,
-                function_info,
-                template_info,
-                reports,
-                environment,
+                cond, 
+                program_id, 
+                function_info, 
+                template_info, 
+                bus_info,
+                reports, 
+                environment
             );
             analyze_expression(
                 if_true,
                 program_id,
                 function_info,
                 template_info,
+                bus_info,
                 reports,
                 environment,
             );
@@ -470,6 +417,7 @@ fn analyze_expression(
                 program_id,
                 function_info,
                 template_info,
+                bus_info,
                 reports,
                 environment,
             );
@@ -483,6 +431,7 @@ fn analyze_expression(
             program_id,
             function_info,
             template_info,
+            bus_info,
             reports,
             environment,
         ),
@@ -526,6 +475,7 @@ fn analyze_expression(
                     program_id,
                     function_info,
                     template_info,
+                    bus_info,
                     reports,
                     environment,
                 );
@@ -538,6 +488,7 @@ fn analyze_expression(
                     program_id,
                     function_info,
                     template_info,
+                    bus_info,
                     reports,
                     environment,
                 );
@@ -551,6 +502,7 @@ fn analyze_expression(
                 program_id,
                 function_info,
                 template_info,
+                bus_info,
                 reports,
                 environment,
             );
@@ -559,10 +511,50 @@ fn analyze_expression(
                 program_id,
                 function_info,
                 template_info,
+                bus_info,
                 reports,
                 environment,
             );
-        }
+        },
+        Expression::BusCall { meta, id, args } => 
+        {
+            if !bus_info.contains_key(id) {
+                let mut report =
+                    Report::error(format!("Calling symbol"), ReportCode::NonExistentSymbol);
+                report.add_primary(
+                    file_definition::generate_file_location(meta.get_start(), meta.get_end()),
+                    program_id.clone(),
+                    format!("Calling unknown symbol"),
+                );
+                reports.push(report);
+                return;
+            }
+            let expected_num_of_params = bus_info.get(id).unwrap().get_num_of_params();
+            if args.len() != expected_num_of_params {
+                let mut report = Report::error(
+                    format!("Instantiating bus with wrong number of arguments"),
+                    ReportCode::BusWrongNumberOfArguments,
+                );
+                report.add_primary(
+                    file_definition::generate_file_location(meta.get_start(), meta.get_end()),
+                    program_id.clone(),
+                    format!("Got {} params, {} where expected", args.len(), expected_num_of_params),
+                );
+                reports.push(report);
+                return;
+            }
+            for arg in args.iter() {
+                analyze_expression(
+                    arg,
+                    program_id,
+                    function_info,
+                    template_info,
+                    bus_info,
+                    reports,
+                    environment,
+                );
+            }
+        },
         _ => {}
     }
 }

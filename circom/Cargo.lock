@@ -3404,7 +3404,7 @@ dependencies = [
 
 [[package]]
 name = "type_analysis"
-version = "2.1.9"
+version = "2.2.0"
 dependencies = [
  "num-bigint-dig",
  "num-traits",

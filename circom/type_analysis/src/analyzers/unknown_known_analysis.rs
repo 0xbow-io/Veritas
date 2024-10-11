@@ -35,27 +35,52 @@ enum Tag {
 //     if (a[i] == 5){ in === 5;} // we do not know if there is an error here or not
 //          --> we cannot detect the error until execution
 
-type Environment = CircomEnvironment<Tag, Tag, (Tag, bool)>;
+type Environment = CircomEnvironment<Tag, Tag, (Tag, bool), Tag>;
 
 pub fn unknown_known_analysis(
-    template_name: &str,
+    name: &str,
     program_library: &ProgramArchive,
 ) -> Result<(), ReportCollection> {
     debug_assert!(Tag::Known < Tag::Unknown);
+    /* old
     let template_data = program_library.get_template_data(template_name);
     let template_body = template_data.get_body();
     let program_id = template_data.get_program_id();
+    */
     let mut environment = Environment::new();
+    /* old
     for arg in template_data.get_name_of_params() {
         // We do not know if it is an array or not, so we use the most restrictive option
         environment.add_variable(arg, (Tag::Known, true));
     }
+    */
 
+    let (body, program_id) = if program_library.contains_template(name) {
+        let template_data = program_library.get_template_data(name);
+        let template_body = template_data.get_body();
+        let program_id = template_data.get_program_id(); //note: originally was .get_file_id()
+        for arg in template_data.get_name_of_params() {
+            // We do not know if it is an array or not, so we use the most restrictive option
+            environment.add_variable(arg, (Tag::Known, true));
+        }
+        (template_body, program_id)
+    } else {
+        debug_assert!(program_library.contains_bus(name));
+        let bus_data = program_library.get_bus_data(name);
+        let bus_body = bus_data.get_body();
+        let program_id = bus_data.get_program_id();
+        for arg in bus_data.get_name_of_params() {
+            // We do not know if it is an array or not, so we use the most restrictive option
+            environment.add_variable(arg, (Tag::Known, true));
+        }
+        (bus_body, program_id)
+    };
+    //note: will require logic changes to have program_id in scope
     let entry = EntryInformation {
         program_id,
         environment,
     };
-    let result = analyze(template_body, entry);
+    let result = analyze(body, entry);
     if result.reports.is_empty() {
         Result::Ok(())
     } else {
@@ -65,7 +90,6 @@ pub fn unknown_known_analysis(
 
 fn analyze(stmt: &Statement, entry_information: EntryInformation) -> ExitInformation {
     use Statement::*;
-    use Symbol::*;
     use Tag::*;
 
     fn iterate_statements(
@@ -123,32 +147,38 @@ fn analyze(stmt: &Statement, entry_information: EntryInformation) -> ExitInforma
             dimensions,
             ..
         } => {
-            if let VariableType::Signal(..) = xtype {
-                environment.add_intermediate(name, Unknown);
-                signals_declared = true;
-            } else if let VariableType::Component = xtype {
-                environment.add_component(name, Unknown);
-                signals_declared = true;
-            } else if let VariableType::AnonymousComponent = xtype {
-                environment.add_component(name, Unknown);
-                signals_declared = true;
-            } else {
-                // it is a variable
-                let is_array = dimensions.len() > 0;
-                environment.add_variable(name, (Known, is_array));
-                modified_variables.insert(name.clone());
+            match xtype {
+                VariableType::Var => {
+                    let is_array = dimensions.len() > 0;
+                    environment.add_variable(name, (Known, is_array));                
+                    modified_variables.insert(name.clone());
+                }
+                VariableType::Signal(..) => {
+                    environment.add_intermediate(name, Unknown);
+                    signals_declared = true;
+                }
+                VariableType::Bus(..) => {
+                    environment.add_intermediate_bus(name, Unknown);
+                    signals_declared = true;
+                }
+                VariableType::Component
+                | VariableType::AnonymousComponent => {
+                    environment.add_component(name, Unknown);
+                    signals_declared = true;
+                }
             }
-            if let VariableType::AnonymousComponent = xtype {
-                // in this case the dimension is ukn
-            } else {
-                for dimension in dimensions {
-                    if tag(dimension, &environment) == Unknown {
-                        add_report(
-                            ReportCode::UnknownDimension,
-                            dimension.get_meta(),
-                            program_id,
-                            &mut reports,
-                        );
+            match xtype {
+                VariableType::AnonymousComponent => {}
+                _ => {
+                    for dimension in dimensions {
+                        if tag(dimension, &environment) == Unknown {
+                            add_report(
+                                    ReportCode::UnknownDimension,
+                                    dimension.get_meta(),
+                                    program_id,
+                                    &mut reports,
+                                );
+                            }
                     }
                 }
             }
@@ -161,71 +191,77 @@ fn analyze(stmt: &Statement, entry_information: EntryInformation) -> ExitInforma
             rhe,
             ..
         } => {
-            let simplified_elem = simplify_symbol(&environment, var, access);
+            let reduced_type = meta.get_type_knowledge().get_reduces_to();
             let expression_tag = tag(rhe, &environment);
             let mut access_tag = Known;
             for acc in access {
                 match acc {
-                    Access::ArrayAccess(exp) if access_tag != Unknown => {
+                    Access::ArrayAccess(exp) => {
                         access_tag = tag(exp, &environment);
                     }
                     _ => {}
                 }
+                if access_tag == Unknown {
+                    break;
+                }
             }
-            if simplified_elem == Variable {
-                let (value, is_array) =
-                    environment.get_mut_variable_or_break(var, file!(), line!());
-                if !*is_array {
-                    // if it is a single variable we always update
-                    *value = max(expression_tag, access_tag);
-                } else if *value == Known {
-                    // if not, if it was ukn it remains ukn
-                    *value = max(expression_tag, access_tag);
+            match reduced_type {
+                TypeReduction::Variable => {
+                    let (value, is_array) = environment.get_mut_variable_or_break(var, file!(), line!());
+                    if !*is_array { // if it is a single variable we always update
+                        *value = max(expression_tag, access_tag);
+                    } else if *value == Known{ // if not, if it was ukn it remains ukn
+                        *value = max(expression_tag, access_tag);
+                    }
+                    modified_variables.insert(var.clone());
                 }
-                modified_variables.insert(var.clone());
-            } else if simplified_elem == Component {
-                constraints_declared = true;
-                if expression_tag == Unknown {
-                    add_report(
-                        ReportCode::UnknownTemplate,
-                        rhe.get_meta(),
-                        program_id,
-                        &mut reports,
-                    );
+                TypeReduction::Component(_) => {
+                    constraints_declared = true;
+                    if expression_tag == Unknown {
+                        add_report(ReportCode::UnknownTemplate, rhe.get_meta(), program_id, &mut reports);
+                    }
+                    if access_tag == Unknown {
+                        add_report(ReportCode::UnknownTemplate, meta, program_id, &mut reports);
+                    }
                 }
-                if access_tag == Unknown {
-                    add_report(ReportCode::UnknownTemplate, meta, program_id, &mut reports);
+                TypeReduction::Bus(_) => {
+                    if  *op == AssignOp::AssignVar && expression_tag == Unknown {
+                        add_report(ReportCode::UnknownBus, meta, program_id, &mut reports);
+                    }
+                    if *op == AssignOp::AssignConstraintSignal {
+                        constraints_declared = true;
+                        if is_non_quadratic(rhe, &environment) {
+                            add_report(ReportCode::NonQuadratic, rhe.get_meta(), program_id, &mut reports);
+                        }
+                        if access_tag == Unknown {
+                            add_report(ReportCode::NonQuadratic, meta, program_id, &mut reports);
+                        }
+                    }
                 }
-            } else if simplified_elem == SignalTag {
-                tags_modified = true;
-                if expression_tag == Unknown {
-                    add_report(
-                        ReportCode::NonValidTagAssignment,
-                        rhe.get_meta(),
-                        program_id,
-                        &mut reports,
-                    );
+                TypeReduction::Tag => {
+                    tags_modified = true;
+                    if expression_tag == Unknown {
+                        add_report(ReportCode::NonValidTagAssignment, rhe.get_meta(), program_id, &mut reports);
+                    }
+                    if access_tag == Unknown {
+                        add_report(ReportCode::NonValidTagAssignment, meta, program_id, &mut reports);
+                    }
                 }
-                if access_tag == Unknown {
-                    add_report(
-                        ReportCode::NonValidTagAssignment,
-                        rhe.get_meta(),
-                        program_id,
-                        &mut reports,
-                    );
-                }
-            } else if *op == AssignOp::AssignConstraintSignal {
-                constraints_declared = true;
-                if is_non_quadratic(rhe, &environment) {
-                    add_report(
-                        ReportCode::NonQuadratic,
-                        rhe.get_meta(),
-                        program_id,
-                        &mut reports,
-                    );
-                }
-                if access_tag == Unknown {
-                    add_report(ReportCode::NonQuadratic, meta, program_id, &mut reports);
+                _ => {
+                    if *op == AssignOp::AssignConstraintSignal {
+                        constraints_declared = true;
+                        if is_non_quadratic(rhe, &environment) {
+                            add_report(ReportCode::NonQuadratic, rhe.get_meta(), program_id, &mut reports);
+                        }
+                        if access_tag == Unknown {
+                            add_report(ReportCode::NonQuadratic, meta, program_id, &mut reports);
+                        }
+                    }
+                    else if environment.has_component(var){
+                        if access_tag == Unknown {
+                            add_report(ReportCode::UnknownTemplateAssignment, meta, program_id, &mut reports);
+                        }
+                    }
                 }
             }
         }
@@ -269,10 +305,7 @@ fn analyze(stmt: &Statement, entry_information: EntryInformation) -> ExitInforma
             ..
         } => {
             let tag_cond = tag(cond, &environment);
-            let new_entry_else_case = EntryInformation {
-                environment: environment.clone(),
-                program_id,
-            };
+            let new_entry_else_case = EntryInformation { environment: environment.clone(), program_id };
             let new_entry_if_case = EntryInformation {
                 environment,
                 program_id,
@@ -447,40 +480,26 @@ fn tag(expression: &Expression, environment: &Environment) -> Tag {
     use Tag::*;
     match expression {
         Number(_, _) => Known,
-        Variable { name, access, .. } => {
-            let mut symbol_tag = if environment.has_variable(name) {
-                let (tag, is_array) = environment.get_variable_or_break(name, file!(), line!());
-                if *is_array {
-                    Known
-                } else {
-                    *tag
-                }
-            } else if environment.has_component(name) {
-                *environment.get_component_or_break(name, file!(), line!())
-            } else {
-                if environment.has_intermediate(name) && !all_array_are_accesses(access) {
-                    Known /* In this case, it is a tag. */
-                } else {
-                    *environment.get_intermediate_or_break(name, file!(), line!())
-                }
-            };
-            let mut index = 0;
-            loop {
-                if index == access.len() {
-                    break symbol_tag;
-                }
-                if symbol_tag == Unknown {
-                    break Unknown;
-                }
-                if let Access::ArrayAccess(exp) = &access[index] {
-                    symbol_tag = tag(exp, environment);
-                } else if !environment.has_intermediate(name) {
-                    symbol_tag = Unknown;
-                }
-                index += 1;
+        Variable { meta, name,.. } => {
+            let reduced_type = meta.get_type_knowledge().get_reduces_to();
+            match reduced_type {
+                TypeReduction::Variable => {
+                    let (tag, is_array) = environment.get_variable_or_break(name, file!(), line!());
+                    if *is_array{
+                        Known
+                    } else{
+                        *tag
+                    }
+                },
+                TypeReduction::Signal => Unknown,
+                TypeReduction::Bus(_) => Unknown,
+                TypeReduction::Component(_) => *environment.get_component_or_break(name, file!(), line!()),
+                TypeReduction::Tag => Known,
             }
         }
-        ArrayInLine { values, .. } | Call { args: values, .. } => {
+        ArrayInLine { values, .. } 
+        | Call { args: values, .. } 
+        | BusCall { args: values, .. }=> {
             expression_iterator(values, Known, Unknown, environment)
         }
         UniformArray {
@@ -537,19 +556,6 @@ fn check_modified(
     modified
 }
 
-fn all_array_are_accesses(accesses: &[Access]) -> bool {
-    let mut i = 0;
-    let mut all_array_accesses = true;
-    while i < accesses.len() && all_array_accesses {
-        let aux = accesses.get(i).unwrap();
-        if let Access::ComponentAccess(_) = aux {
-            all_array_accesses = false;
-        }
-        i = i + 1;
-    }
-    all_array_accesses
-}
-
 // ****************************** Expression utils ******************************
 fn expression_iterator(
     values: &[Expression],
@@ -557,48 +563,13 @@ fn expression_iterator(
     look_for: Tag,
     environment: &Environment,
 ) -> Tag {
-    let mut index = 0;
-    loop {
-        if index == values.len() {
-            break end_tag;
-        }
-        let index_tag = tag(&values[index], environment);
+    for value in values {
+        let index_tag = tag(value, environment);
         if index_tag == look_for {
-            break look_for;
+            return look_for;
         }
-        index += 1;
     }
-}
-
-//  ****************************** AST simplification utils ******************************
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum Symbol {
-    Signal,
-    Component,
-    Variable,
-    SignalTag,
-}
-fn simplify_symbol(environment: &Environment, name: &str, access: &[Access]) -> Symbol {
-    use Symbol::*;
-    if environment.has_variable(name) {
-        Variable
-    } else if environment.has_signal(name) {
-        let mut symbol = Signal;
-        for acc in access {
-            if let Access::ComponentAccess(_) = acc {
-                symbol = SignalTag;
-            }
-        }
-        symbol
-    } else {
-        let mut symbol = Component;
-        for acc in access {
-            if let Access::ComponentAccess(_) = acc {
-                symbol = Signal;
-            }
-        }
-        symbol
-    }
+    end_tag
 }
 
 //  ****************************** Early non-quadratic detection ******************************
@@ -610,55 +581,56 @@ fn is_non_quadratic(exp: &Expression, environment: &Environment) -> bool {
 fn unknown_index(exp: &Expression, environment: &Environment) -> bool {
     use Expression::*;
     use Tag::*;
-    let (init, rec) = match exp {
-        Number(..) => (false, vec![]),
+    match exp {
+        Number(..) => false,
         Variable { access, .. } => {
             let mut has_unknown_index = false;
-            let mut index = 0;
-            loop {
-                if index == access.len() || has_unknown_index {
-                    break (has_unknown_index, vec![]);
-                }
-                if let Access::ArrayAccess(ex) = &access[index] {
+            for acc in access {
+                if let Access::ArrayAccess(ex) = acc {
                     has_unknown_index = Unknown == tag(ex, environment);
                 }
-                index += 1;
+                if has_unknown_index {
+                    break;
+                }
             }
+            has_unknown_index
         }
-        InfixOp { lhe, rhe, .. } => (false, vec![lhe.as_ref(), rhe.as_ref()]),
-        PrefixOp { rhe, .. } => (false, vec![rhe.as_ref()]),
-        ParallelOp { rhe, .. } => (false, vec![rhe.as_ref()]),
+        InfixOp { lhe, rhe, .. } => {
+            unknown_index(lhe.as_ref(), environment) || unknown_index(rhe.as_ref(), environment)
+        }
+        PrefixOp { rhe, .. } => {
+            unknown_index(rhe.as_ref(), environment)
+        }
+        ParallelOp { rhe, .. } => {
+            unknown_index(rhe.as_ref(), environment)
+        }
         InlineSwitchOp {
             cond,
             if_true,
             if_false,
             ..
-        } => (
-            false,
-            vec![cond.as_ref(), if_true.as_ref(), if_false.as_ref()],
-        ),
-        Call { args: exprs, .. } | ArrayInLine { values: exprs, .. } => {
-            let mut bucket = Vec::new();
+        } => {
+            unknown_index(cond.as_ref(), environment)
+            || unknown_index(if_true.as_ref(), environment)
+            || unknown_index(if_false.as_ref(), environment)
+        }
+        Call { args: exprs, .. }
+        | BusCall { args: exprs, .. }
+        | ArrayInLine { values: exprs, .. }
+        | Tuple { values: exprs, .. } => {
+            let mut has_unknown_index = false;
             for exp in exprs {
-                bucket.push(exp);
+                has_unknown_index = has_unknown_index || unknown_index(exp, environment);
+                if has_unknown_index {
+                    break;
+                }
             }
-            (false, bucket)
+            has_unknown_index
         }
-        UniformArray {
-            value, dimension, ..
-        } => (false, vec![value.as_ref(), dimension.as_ref()]),
-        _ => {
-            unreachable!("Anonymous calls should not be reachable at this point.");
+        UniformArray{ value, dimension, .. } => {
+            unknown_index(value.as_ref(), environment) || unknown_index(dimension.as_ref(), environment)
         }
-    };
-    let mut has_unknown_index = init;
-    let mut index = 0;
-    loop {
-        if index == rec.len() || has_unknown_index {
-            break has_unknown_index;
-        }
-        has_unknown_index = unknown_index(&rec[index], environment);
-        index += 1;
+        _ => {unreachable!("Anonymous calls should not be reachable at this point."); }
     }
 }
 
@@ -673,15 +645,17 @@ fn add_report(
     let mut report = Report::error("Typing error found".to_string(), error_code);
     let location = generate_program_location(meta.start, meta.end);
     let message = match error_code {
+        UnknownTemplateAssignment => "Assigments to signals within an unknown access to an array of components are not allowed".to_string(),
+        UnknownBus => "Parameters of a bus must be known during the constraint generation phase".to_string(),
         UnknownDimension => "The length of every array must be known during the constraint generation phase".to_string(),
         UnknownTemplate => "Every component instantiation must be resolved during the constraint generation phase. This component declaration uses a value that can be unknown during the constraint generation phase.".to_string(),
         NonValidTagAssignment => "Tags cannot be assigned to values that can be unknown during the constraint generation phase".to_string(),
         NonQuadratic => "Non-quadratic constraint was detected statically, using unknown index will cause the constraint to be non-quadratic".to_string(),
         UnreachableConstraints => "There are constraints depending on the value of the condition and it can be unknown during the constraint generation phase".to_string(),
         UnreachableTags => "There are tag assignments depending on the value of the condition and it can be unknown during the constraint generation phase".to_string(),
-        UnreachableSignals => "There are signal or component declarations depending on the value of the condition and it can be unknown during the constraint generation phase".to_string(),
+        UnreachableSignals => "There are signal, bus or component declarations depending on the value of the condition and it can be unknown during the constraint generation phase".to_string(),
         _ => panic!("Unimplemented error code")
-    };
+    }; //note: unreachable? may be fixed once i continue upgrading other files..?
     report.add_primary(location, program_id, message);
     reports.push(report);
 }
