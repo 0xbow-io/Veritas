@@ -1457,7 +1457,7 @@ fn add_report(error_code: ReportCode, meta: &Meta, reports: &mut ReportCollectio
         InvalidSignalAccessInBus => format!("Field not defined in bus"),
         IllegalMainExpression => "Invalid main component: the main component should be a template, not a function call or expression".to_string(),
         e => panic!("Unimplemented error code: {}", e),
-    };
+    };//note: more unreachable pattern errors?
     report.add_primary(location, program_id, message);
     reports.push(report);
 }
