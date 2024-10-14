@@ -15,7 +15,7 @@ impl Statement {
             | ConstraintEquality { meta, .. }
             | InitializationBlock { meta, .. }
             | MultSubstitution { meta, ..}
-            UnderscoreSubstitution { meta, .. } => meta,  //NOTE: meant to have a | infront i.e. | UnderscoreSubstitution { meta, .. } => meta, https://github.com/iden3/circom/blob/v2.2.0/program_structure/src/abstract_syntax_tree/statement_impl.rs
+            | UnderscoreSubstitution { meta, .. } => meta,  //NOTE: meant to have a | infront i.e. | UnderscoreSubstitution { meta, .. } => meta, ive adjusted already. https://github.com/iden3/circom/blob/v2.2.0/program_structure/src/abstract_syntax_tree/statement_impl.rs
         }
     }
     pub fn get_mut_meta(&mut self) -> &mut Meta {
@@ -32,7 +32,7 @@ impl Statement {
             | ConstraintEquality { meta, .. }
             | InitializationBlock { meta, .. }
             | MultSubstitution { meta, ..}
-            UnderscoreSubstitution { meta, .. } => meta, //NOTE: meant to have a | infront i.e.  UnderscoreSubstitution { meta, .. } => meta,
+            | UnderscoreSubstitution { meta, .. } => meta, //NOTE: meant to have a | infront i.e.  UnderscoreSubstitution { meta, .. } => meta, ive adjusted already. Delete comment if not needed.
         }
     }
 
