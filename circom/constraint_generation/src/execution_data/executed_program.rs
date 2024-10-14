@@ -1,5 +1,6 @@
 use super::analysis::Analysis;
 use super::executed_template::{ExecutedTemplate, PreExecutedTemplate};
+use super::executed_bus::ExecutedBus;
 use super::type_definitions::*;
 use compiler::hir::very_concrete_program::{Stats, VCPConfig, VCP};
 use dag::DAG;
@@ -13,7 +14,9 @@ pub type ExportResult = Result<(DAG, VCP, ReportCollection), ReportCollection>;
 pub struct ExecutedProgram {
     pub model: Vec<ExecutedTemplate>,
     pub model_pretemplates: Vec<PreExecutedTemplate>,
+    pub model_buses: Vec<ExecutedBus>,
     pub template_to_nodes: HashMap<String, Vec<NodePointer>>,
+    pub bus_to_nodes: HashMap<String, Vec<NodePointer>>,
     pub prime: String,
 }
 
@@ -24,6 +27,8 @@ impl ExecutedProgram {
             template_to_nodes: HashMap::new(),
             prime: prime.clone(),
             model_pretemplates: Vec::new(),
+            model_buses: Vec::new(),
+            bus_to_nodes: HashMap::new(),
         }
     }
 
@@ -45,6 +50,21 @@ impl ExecutedProgram {
         }
         Option::None
     }
+
+    pub fn identify_bus_node(&self, name: &str, context: &ParameterContext) -> Option<NodePointer> {
+        if !self.bus_to_nodes.contains_key(name) {
+            return Option::None;
+        }
+        let related_nodes = self.bus_to_nodes.get(name).unwrap();
+        for index in related_nodes {
+            let existing_node = &self.model_buses[*index];
+            if ExecutedBus::is_equal(existing_node, name, context) {
+                return Option::Some(*index);
+            }
+        }
+        Option::None
+    }
+
     pub fn number_of_nodes(&self) -> usize {
         self.model.len()
     }
@@ -67,6 +87,13 @@ impl ExecutedProgram {
             return Option::None;
         }
         Option::Some(self.model_pretemplates[node_pointer].clone())
+    }
+
+    pub fn get_bus_node(&self, node_pointer: NodePointer) -> Option<&ExecutedBus> {
+        if node_pointer >= self.model_buses.len() {
+            return Option::None;
+        }
+        Option::Some(&self.model_buses[node_pointer])
     }
 
     pub fn add_prenode_to_scheme(&mut self, node: PreExecutedTemplate) -> NodePointer {
@@ -107,6 +134,31 @@ impl ExecutedProgram {
         node_index
     }
 
+    pub fn add_bus_node_to_scheme(
+        &mut self,
+        node: ExecutedBus,
+        _analysis: Analysis, // not needed?
+    ) -> NodePointer {
+        //use super::filters::*;
+        // Clean code???
+        //apply_unused(&mut node.code, &analysis, &self.prime);
+        //apply_computed(&mut node.code, &analysis);
+        // Insert template
+        let possible_index = self.identify_bus_node(
+            node.bus_name(), 
+            node.parameter_instances(),
+        );
+        if let Option::Some(index) = possible_index {
+            return index;
+        }
+        self.bus_to_nodes.entry(node.bus_name().clone()).or_insert_with(|| vec![]);
+        let nodes_for_bus = self.bus_to_nodes.get_mut(node.bus_name()).unwrap();
+        let node_index = self.model_buses.len();
+        self.model_buses.push(node);
+        nodes_for_bus.push(node_index);
+        node_index
+    }
+
     pub fn export(mut self, mut library: ProgramArchive) -> ExportResult {
         use super::executed_template::templates_in_mixed_arrays;
         fn merge_mixed(org: Vec<bool>, new: Vec<bool>) -> Vec<bool> {
@@ -130,11 +182,23 @@ impl ExecutedProgram {
         }
 
         for exe in &mut self.model {
-            exe.insert_in_dag(&mut dag);
+            exe.insert_in_dag(&mut dag, &self.model_buses);
+        }
+
+        let mut wrapped_buses_table = vec![None; self.model_buses.len()];
+        let mut index = 0;
+        for exe_bus in &self.model_buses{
+            exe_bus.build_bus_info(index, &mut wrapped_buses_table, &self.model_buses);
+            index += 1;
+        }
+
+        let mut buses_table = Vec::new();
+        for info in wrapped_buses_table{
+            buses_table.push(info.unwrap());
         }
 
         for exe in self.model {
-            let tmp_instance = exe.export_to_circuit(&mut temp_instances);
+            let tmp_instance = exe.export_to_circuit(&mut temp_instances, &buses_table);
             temp_instances.push(tmp_instance);
         }
 
@@ -168,6 +232,7 @@ impl ExecutedProgram {
                             templates_in_mixed: mixed,
                             library,
                             prime: self.prime,
+                            buses: buses_table
                         };
                         let vcp = VCP::new(config);
                         Ok((dag, vcp, warnings))
