@@ -9,6 +9,10 @@ on:
 permissions:
     contents: write
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: false
+
 jobs:
     build:
         strategy:
@@ -44,6 +48,7 @@ jobs:
                   path: include
 
             - name: Commit and push if changed
+              id: commit
               run: |
                   git config --local user.email "action@github.com"
                   git config --local user.name "GitHub Action"
