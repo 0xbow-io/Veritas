@@ -1,0 +1,15 @@
+[package]
+name = "circom_algebra"
+version = "2.2.0"
+edition = "2018"
+license = "LGPL-3.0-only"
+description = "Support crate for the Veritas"
+repository = "https://github.com/0xbow.io/veritas"
+authors = [
+  "0xbow.io",
+]
+
+[dependencies]
+num-bigint-dig = "0.8.4"
+num-traits = "0.2.19"
+constant_tracking = {path = "../constant_tracking" }

@@ -1,104 +1,186 @@
 package veritas
 
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/big"
+	"runtime/cgo"
+	"strconv"
+	"sync"
+	"unsafe"
+)
+
 /*
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
 
-typedef void* FFIProgramArchive;
-typedef void* FFICircomCircuit;
-typedef void* FFIWitnessCalculator;
+typedef void* FFICircom;
 
-// program archive
-extern void ffi_build_program_archive(uintptr_t ctx_handle, char* ctx_json);
-extern void ffi_type_analysis(uintptr_t ctx_handle, FFIProgramArchive ffi_prog_arch);
+// ffi_compile_library will parse the pkg
+// and compile the circuit components (i.e. witness generator)
+// that are required for witness generation
+extern void ffi_compile_library(uintptr_t ctx_handle, char* pkg_json_raw);
 
-// circom circuit
-extern void ffi_compile_circom_circuit(uintptr_t ctx_handle, FFIProgramArchive ffi_prog_arch);
-
-// witness generator
-extern void ffi_generate_witness_calculator(uintptr_t ctx_handle, FFICircomCircuit ffi_circuit);
-extern void ffi_calculate_witness(uintptr_t ctx_handle, FFICircomCircuit ffi_circuit, FFIWitnessCalculator ffi_wc, char* inputs_json);
+// ffi_circuit_execution will generate witness for the given inputs
+extern void ffi_circuit_execution(uintptr_t ctx_handle, FFICircom ffi_circom, char* pkg_json_raw);
 
 // utils
 extern void free_string(char* str);
-extern void free_prog_arch(FFIProgramArchive ffi_prog_arch);
-extern void free_circom_circuit(FFICircomCircuit ffi_circuit);
-extern void free_witness_calculator(FFIWitnessCalculator ffi_wc);
+extern void free_circom(FFICircom ptr);
 
-#cgo FFI_DEBUG -Wl LDFLAGS: -L./circom/target/debug   -lcircom_ffi
+#cgo FFI_DEBUG -Wl LDFLAGS: -L./circom/target/debug   -lcircom
 */
 import "C"
 
-import (
-	"encoding/json"
-	"fmt"
-	"runtime/cgo"
-	"sync"
-	"unsafe"
-
-	"github.com/pkg/errors"
-)
-
-type RunTimeCTX struct {
-	Version string      `json:"version"`
-	Prime   string      `json:"prime"`
-	Src     [][2]string `json:"src"`
+//export share_evaluations
+func share_evaluations(ctx_handle C.uintptr_t, jsonBytes *C.void, bytesLen C.size_t) {
+	unwrapCtx(ctx_handle).CacheEval(toJsonRaw(jsonBytes, bytesLen))
 }
 
-type CircomFFI struct {
-	witness           chan json.RawMessage
-	WitnessCalculator C.FFIWitnessCalculator
-	CircomCircuit     C.FFICircomCircuit
-	ProgramArchive    C.FFIProgramArchive
-	Diagnostics       []CompilerDiagnostic `json:"diagnostics"`
-	Err               error                `json:"err"`
+//export share_report
+func share_report(ctx_handle C.uintptr_t, jsonBytes *C.void, bytesLen C.size_t) {
+	unwrapCtx(ctx_handle).StoreReport(toJsonRaw(jsonBytes, bytesLen))
 }
 
-func (c *CircomFFI) FreeWitnessCalculator() { C.free_witness_calculator(c.WitnessCalculator) }
-func (c *CircomFFI) FreeCircomCircuit()     { C.free_circom_circuit(c.CircomCircuit) }
-func (c *CircomFFI) FreeProgramArchive()    { C.free_prog_arch(c.ProgramArchive) }
-func (c *CircomFFI) Free() {
-	c.FreeWitnessCalculator()
-	c.FreeCircomCircuit()
-	c.FreeProgramArchive()
+//export share_circom_ptr
+func share_circom_ptr(ctx_handle C.uintptr_t, circom C.FFICircom) { unwrapCtx(ctx_handle).ptr = circom }
+
+type _CtxFFI struct {
+	ptr     C.FFICircom
+	reports ReportCollection
+	// cache for the last evaluation result
+	last_eval *evaluation
 }
 
-func unwrapCtx(ctx_handle C.uintptr_t) *CircomFFI {
-	ctx, ok := cgo.Handle(ctx_handle).Value().(*CircomFFI)
-	if !ok {
-		panic("cannot cast ctx")
+func (f *_CtxFFI) free() {
+	if f.ptr != nil {
+		C.free_circom(f.ptr)
 	}
+}
 
+func (f *_CtxFFI) CacheEval(e json.RawMessage) {
+	f.last_eval = &evaluation{}
+	if err := json.Unmarshal(e, f.last_eval); err != nil {
+		return
+	}
+}
+func (f *_CtxFFI) StoreReport(r json.RawMessage) {
+	var report Report
+	if err := json.Unmarshal(r, &report); err != nil {
+		return
+	}
+	f.reports = append(f.reports, report)
+}
+
+func unwrapCtx(ctx_handle C.uintptr_t) *_CtxFFI {
+	ctx, ok := cgo.Handle(ctx_handle).Value().(*_CtxFFI)
+	if !ok {
+		// this shouldn never happen
+		panic("invalid context handle")
+	}
 	return ctx
 }
 
-//export VeritasIncludeProgArch
-func VeritasIncludeProgArch(ctx_handle C.uintptr_t, arch C.FFIProgramArchive) {
-	ctx := unwrapCtx(ctx_handle)
-	ctx.ProgramArchive = arch
+type CircuitLibrary interface {
+	Evaluate(inputs []byte) (Evaluation, error)
+	Compile(pkg CircuitPkg) (ReportCollection, error)
+	GetReports() (ReportCollection, error)
+
+	Burn()
+}
+type _CircuitLibrary struct {
+	ctx *_CtxFFI
+	mtx *sync.Mutex
 }
 
-//export VeritasIncludeCircomCircuit
-func VeritasIncludeCircomCircuit(ctx_handle C.uintptr_t, circuit C.FFICircomCircuit) {
-	ctx := unwrapCtx(ctx_handle)
-	ctx.CircomCircuit = circuit
+func NewEmptyLibrary() CircuitLibrary {
+	return &_CircuitLibrary{mtx: &sync.Mutex{}}
 }
 
-//export VeritasIncludeWC
-func VeritasIncludeWC(ctx_handle C.uintptr_t, wc C.FFIWitnessCalculator) {
-	ctx := unwrapCtx(ctx_handle)
-	ctx.WitnessCalculator = wc
+func (lib *_CircuitLibrary) Compile(pkg CircuitPkg) (ReportCollection, error) {
+	if lib.ctx != nil {
+		return nil, errors.New("FFI Bindings exists, make sure to free them before compiling again")
+	}
+	defer lib.mtx.Unlock()
+	var (
+		ctx = &_CtxFFI{
+			ptr:       nil,
+			reports:   make(ReportCollection, 0),
+			last_eval: nil,
+		}
+		ctx_handle = cgo.NewHandle(ctx)
+	)
+	defer ctx_handle.Delete()
+
+	pkgJson, err := json.Marshal(pkg)
+	if err != nil {
+		return nil, err
+	}
+	pkgJSONStr := cstring(pkgJson)
+	lib.mtx.Lock()
+
+	// compile the circuit
+	C.ffi_compile_library(C.uintptr_t(ctx_handle), pkgJSONStr)
+	// Release the json string from memory
+	C.free_string(pkgJSONStr)
+	// store the context
+	lib.ctx = ctx
+	// return the reports
+	return lib.GetReports()
 }
 
-//export VeritasIncludeWitness
-func VeritasIncludeWitness(ctx_handle C.uintptr_t, witness_json *C.char) {
-	unwrapCtx(ctx_handle)
-	witness_json_str := C.GoString(witness_json)
-	fmt.Printf("Witness: %s\n", witness_json_str)
+func (lib *_CircuitLibrary) Evaluate(inputs []byte) (Evaluation, error) {
+	if lib.ctx == nil || lib.ctx.ptr == nil {
+		return nil, errors.New("FFI Bindings has not been initialized")
+	}
+
+	defer lib.mtx.Unlock()
+	lib.mtx.Lock()
+
+	ctx_handle := cgo.NewHandle(lib.ctx)
+	defer ctx_handle.Delete()
+
+	inputsJSONCStr := cstring(inputs)
+	C.ffi_circuit_execution(C.uintptr_t(ctx_handle), lib.ctx.ptr, inputsJSONCStr)
+	C.free_string(inputsJSONCStr)
+	return lib.GetEvaluation()
 }
 
-type CompilerDiagnostic struct {
+func (lib *_CircuitLibrary) GetReports() (ReportCollection, error) {
+	if lib.ctx == nil {
+		return nil, errors.New("FFI Bindings does not exist")
+	}
+	return lib.ctx.reports, nil
+}
+
+func (lib *_CircuitLibrary) GetEvaluation() (Evaluation, error) {
+	if lib.ctx == nil {
+		return nil, errors.New("FFI Bindings does not exist")
+	}
+	if lib.ctx.last_eval == nil {
+		return nil, errors.New("No evaluation has been performed")
+	}
+	return lib.ctx.last_eval, nil
+}
+func (lib *_CircuitLibrary) Burn() {
+	if lib.ctx != nil {
+		lib.ctx.free()
+	}
+	lib.ctx = nil
+}
+
+type ReportCollection []Report
+
+func (c ReportCollection) String() (s string) {
+	for _, r := range c {
+		s += r.String()
+	}
+	return
+}
+
+type Report struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
@@ -114,161 +196,208 @@ type CompilerDiagnostic struct {
 	Notes []string `json:"notes"`
 }
 
-func (diag *CompilerDiagnostic) Print() (s string) {
-	s += fmt.Sprintf("**\tSeverity: %s\n", diag.Severity)
-	s += fmt.Sprintf("**\tCode: %s\n", diag.Code)
-	s += fmt.Sprintf("**\tMessage: %s\n", diag.Message)
-	for _, label := range diag.Labels {
+func (*Report) Default() Report {
+	return Report{
+		Severity: "error",
+		Code:     "default",
+		Message:  "default",
+		Labels:   nil,
+		Notes:    nil,
+	}
+}
+
+func (r *Report) String() (s string) {
+	s += fmt.Sprintf("**\tSeverity: %s\n", r.Severity)
+	s += fmt.Sprintf("**\tCode: %s\n", r.Code)
+	s += fmt.Sprintf("**\tMessage: %s\n", r.Message)
+	for _, label := range r.Labels {
 		s += fmt.Sprintf("**\t\tStyle: %s\n", label.Style)
 		s += fmt.Sprintf("**\t\tFileId: %d\n", label.FileId)
 		s += fmt.Sprintf("**\t\tRange: %d-%d\n", label.Range.Start, label.Range.End)
 		s += fmt.Sprintf("**\t\tMessage: %s\n", label.Message)
 	}
-	for _, note := range diag.Notes {
+	for _, note := range r.Notes {
 		s += fmt.Sprintf("**\t\tNote: %s\n", note)
 	}
 	return
 }
 
-//export VeritasIncludeDiagnostic
-func VeritasIncludeDiagnostic(ctx_handle C.uintptr_t, jsonBytes *C.void, bytesLen C.size_t) {
-	ctx := unwrapCtx(ctx_handle)
-
-	jsonRaw := json.RawMessage(C.GoBytes(unsafe.Pointer(jsonBytes), C.int(bytesLen)))
-	var diag CompilerDiagnostic
-	err := json.Unmarshal(jsonRaw, &diag)
-	if err == nil {
-		ctx.Diagnostics = append(ctx.Diagnostics, diag)
-	} else {
-		ctx.Err = errors.Wrap(ctx.Err, err.Error())
-	}
+type Program struct {
+	Identity string `json:"identity"`
+	Src      string `json:"src"`
 }
 
-//export VeritasIncludeError
-func VeritasIncludeError(ctx_handle C.uintptr_t, msg *C.char) {
-	ctx := unwrapCtx(ctx_handle)
-	ctx.Err = errors.Wrap(ctx.Err, C.GoString(msg))
+type CircuitPkg struct {
+	TargetVersion string    `json:"target_version"`
+	Field         string    `json:"field"`
+	Programs      []Program `json:"programs"`
 }
 
-type CircomCompiler interface {
-	Compile(ctx *RunTimeCTX) (CircomCompiler, error)
-	Exec(inputs []byte) error
-	Release() bool
+type Evaluation interface {
+	ConstrainedSyms() []string
+	UnConstrainedSyms() []string
+	WitnessAssignment() []*big.Int
+	GetSymbolAssignment(sym *Symbol) *big.Int
+	SatisfiedConstraints() []uint
+	UnSatisfiedConstraints() []uint
+	AssignWitToSym()
+	String() string
 }
 
-type _CircomCompiler struct {
-	ctx *CircomFFI
-	mtx *sync.Mutex
+type evaluation struct {
+	Field       string   `json:"field"`
+	Assignments []string `json:"assignments"`
+	Constraints lcs      `json:"constraints"`
+	Symbols     struct {
+		Constrained   []Symbol `json:"constrained"`
+		Unconstrained []Symbol `json:"unconstrained"`
+	} `json:"symbols"`
 }
 
-func NewCircomCompiler() CircomCompiler {
-	return &_CircomCompiler{
-		mtx: new(sync.Mutex),
-	}
+// Keeping fields as string for now
+type lcs []lc
+type lc struct {
+	// witness to coefficient mapping
+	A               [][2]string `json:"a_constraints"`
+	B               [][2]string `json:"b_constraints"`
+	C               [][2]string `json:"c_constraints"`
+	Arithmetization [4]string   `json:"arithmetization"`
+	IsSatisfied     string      `json:"satisfied"`
 }
 
-func CheckDiagnostics(ctx *CircomFFI) bool {
-	if ctx.Err != nil {
-		fmt.Printf("\n_____Error_____\n\n")
-		fmt.Println(ctx.Err)
-		return false
+func (e *evaluation) ConstrainedSyms() []string {
+	var res []string
+	for _, sym := range e.Symbols.Constrained {
+		res = append(res, sym.Symbol)
 	}
-	if len(ctx.Diagnostics) > 0 {
-		fmt.Printf("\n_____Diagnostics_____\n\n")
-		for _, diag := range ctx.Diagnostics {
-			fmt.Println(diag.Print())
-		}
-		return false
-	}
-	return true
+	return res
 }
 
-func (c *_CircomCompiler) Exec(inputs []byte) error {
-	if c.ctx == nil {
-		return errors.New("FFI Bindings not initialized")
+func (e *evaluation) UnConstrainedSyms() []string {
+	var res []string
+	for _, sym := range e.Symbols.Unconstrained {
+		res = append(res, sym.Symbol)
 	}
+	return res
+}
 
-	if c.ctx.WitnessCalculator == nil || c.ctx.CircomCircuit == nil {
-		return errors.New("WitnessCalculator or CircomCircuit not initialized")
+func (e *evaluation) WitnessAssignment() []*big.Int {
+	var assignments = make([]*big.Int, len(e.Assignments))
+	for i, assignment := range e.Assignments {
+		assignments[i], _ = new(big.Int).SetString(assignment, 10)
 	}
+	return assignments
+}
 
-	defer c.mtx.Unlock()
-	c.mtx.Lock()
-
-	ctx_handle := cgo.NewHandle(c.ctx)
-	defer ctx_handle.Delete()
-
-	inputsJSONCStr := cstring(inputs)
-
-	C.ffi_calculate_witness(C.uintptr_t(ctx_handle), c.ctx.CircomCircuit, c.ctx.WitnessCalculator, inputsJSONCStr)
-	C.free_string(inputsJSONCStr)
-
-	if !CheckDiagnostics(c.ctx) {
-		c.ctx.Free()
-		return errors.Wrap(c.ctx.Err, "CircomCompiler generate witness calculator needs attention")
+func (e *evaluation) AssignWitToSym() {
+	for i := 0; i < len(e.Symbols.Constrained); i++ {
+		e.Symbols.Constrained[i].Assignment, _ = new(big.Int).SetString(e.Assignments[i], 10)
+	}
+}
+func (e *evaluation) GetSymbolAssignment(sym *Symbol) *big.Int {
+	// if sym.witness != "-1" then it is a constrained symbol
+	// constrained symbols are arranged by witness index
+	idx, err := strconv.Atoi(sym.Witness)
+	if idx < 0 || err != nil || idx > len(e.Assignments) {
+		return nil
+	}
+	if diff := sym.SameSym(&e.Symbols.Constrained[idx]); diff == "" {
+		return e.Symbols.Constrained[idx].Assignment
 	}
 	return nil
 }
-
-func (c *_CircomCompiler) Release() bool {
-	if c.ctx != nil {
-		c.ctx.Free()
-		c.ctx = nil
-		return true
+func (e *evaluation) SatisfiedConstraints() []uint {
+	var res []uint
+	for i, lc := range e.Constraints {
+		if lc.IsSatisfied == "true" {
+			res = append(res, uint(i))
+		}
 	}
-	return false
+	return res
+}
+func (e *evaluation) UnSatisfiedConstraints() []uint {
+	var res []uint
+	for i, lc := range e.Constraints {
+		if lc.IsSatisfied == "false" {
+			res = append(res, uint(i))
+		}
+	}
+	return res
 }
 
-// Compile compiles the CircomCompiler code
-// By executing the ffi function ffi_compile_CircomCompiler
-// Prints out diagnostics if any
-// Returns an error if any
-func (c *_CircomCompiler) Compile(rtCtx *RunTimeCTX) (CircomCompiler, error) {
-	if c.ctx != nil {
-		return nil, errors.New("FFI Bindings exists, make sure to free them before compiling again")
-	}
+func (e *evaluation) String() string {
+	linear_a_string := ""
+	linear_b_string := ""
+	linear_c_string := ""
+	out := ""
+	for _, lc := range e.Constraints {
+		for _, a := range lc.A {
+			witness, _ := strconv.Atoi(a[0])
+			assignment := e.Assignments[witness]
 
-	defer c.mtx.Unlock()
-	var (
-		ctx = &CircomFFI{
-			Diagnostics: make([]CompilerDiagnostic, 0),
+			linear_a_string += fmt.Sprintf("[%s](%s * %s) + ",
+				e.Symbols.Constrained[witness].Symbol, assignment, a[1])
 		}
-		ctx_handle = cgo.NewHandle(ctx)
-	)
-	defer ctx_handle.Delete()
+		for _, b := range lc.B {
+			witness, _ := strconv.Atoi(b[0])
+			assignment := e.Assignments[witness]
 
-	rtCtxJSON, err := json.Marshal(rtCtx)
-	if err != nil {
-		return nil, errors.Wrap(err, "unable to marshal runtime ctx")
+			linear_b_string += fmt.Sprintf("[%s](%s * %s) + ",
+				e.Symbols.Constrained[witness].Symbol, assignment, b[1])
+		}
+		for _, c := range lc.C {
+			witness, _ := strconv.Atoi(c[0])
+			assignment := e.Assignments[witness]
+
+			linear_c_string += fmt.Sprintf("[%s](%s * %s) + ",
+				e.Symbols.Constrained[witness].Symbol, assignment, c[1])
+		}
+		out += fmt.Sprintf("\nA: %s = %s\nB: %s = %s\nC: %s = %s\n",
+			linear_a_string, lc.Arithmetization[0],
+			linear_b_string, lc.Arithmetization[1],
+			linear_c_string, lc.Arithmetization[2])
 	}
-	rtCtxJSONCstr := cstring(rtCtxJSON)
-	c.mtx.Lock()
+	return out
+}
 
-	// (1) Build Program Archive
-	C.ffi_build_program_archive(C.uintptr_t(ctx_handle), rtCtxJSONCstr)
-	C.free_string(rtCtxJSONCstr)
+type Symbol struct {
+	Symbol     string `json:"symbol"`
+	NodeID     string `json:"node_id"`
+	Original   string `json:"original"`
+	Witness    string `json:"witness"`
+	Assignment *big.Int
+}
 
-	if !CheckDiagnostics(ctx) {
-		ctx.Free()
-		return nil, errors.Wrap(ctx.Err, "CircomCompiler build program archive needs attention")
+func (s *Symbol) String() string {
+	return fmt.Sprintf("Sym: %s (%s %s %s) --> %s",
+		s.Symbol,
+		s.NodeID,
+		s.Original,
+		s.Witness,
+		s.Assignment.String())
+}
+
+func (s *Symbol) SameSym(other *Symbol) string {
+	if other == nil {
+		return ""
 	}
-
-	// (2) Compile Circuit
-	// This includes type checking
-	C.ffi_compile_circom_circuit(C.uintptr_t(ctx_handle), ctx.ProgramArchive)
-	if !CheckDiagnostics(ctx) {
-		ctx.Free()
-		return nil, errors.Wrap(ctx.Err, "CircomCompiler compile circuit needs attention")
+	if s.Symbol != other.Symbol {
+		return "!Symbol"
 	}
-
-	// (3) Generate Witness Calculator
-	C.ffi_generate_witness_calculator(C.uintptr_t(ctx_handle), ctx.CircomCircuit)
-	if !CheckDiagnostics(ctx) {
-		ctx.Free()
-		return nil, errors.Wrap(ctx.Err, "CircomCompiler generate witness calculator needs attention")
+	if s.NodeID != other.NodeID {
+		return "!NodeID"
 	}
-	c.ctx = ctx
-	return c, nil
+	if s.Original != other.Original {
+		return "!Original"
+	}
+	if s.Witness != other.Witness {
+		return "!Witness"
+	}
+	return ""
+}
+
+func toJsonRaw(jsonBytes *C.void, bytesLen C.size_t) json.RawMessage {
+	return json.RawMessage(C.GoBytes(unsafe.Pointer(jsonBytes), C.int(bytesLen)))
 }
 
 // cstring creates a null-terminated C string from the given byte slice.

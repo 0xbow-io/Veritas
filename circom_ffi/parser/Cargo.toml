@@ -1,0 +1,30 @@
+[package]
+name = "parser"
+version = "2.2.0"
+edition = "2018"
+build = "build.rs"
+license = "LGPL-3.0-only"
+description = "Support crate for the Veritas"
+repository = "https://github.com/0xbow.io/veritas"
+authors = [
+  "0xbow.io",
+]
+
+
+
+[build-dependencies]
+rustc-hex = "2.1.0"
+lalrpop = { version = "0.22.0", features = ["lexer"] }
+num-bigint-dig = "0.8.4"
+num-traits = "0.2.19"
+
+[dependencies]
+program_structure = {path = "../program_structure"}
+lalrpop-util = { version="0.22.0",  features = ["lexer"]}
+regex = "1.11.0"
+rustc-hex = "2.1.0"
+num-bigint-dig = "0.8.4"
+num-traits = "0.2.19"
+
+serde = "1.0.210"
+serde_derive = "1.0.210"

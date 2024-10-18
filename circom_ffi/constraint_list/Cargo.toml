@@ -1,0 +1,20 @@
+[package]
+name = "constraint_list"
+version = "2.2.0"
+edition = "2018"
+license = "LGPL-3.0-only"
+description = "Support crate for the Veritas"
+repository = "https://github.com/0xbow.io/veritas"
+authors = [
+  "0xbow.io",
+]
+
+
+
+[dependencies]
+constraint_writers = { path = "../constraint_writers" }
+circom_algebra = { path = "../circom_algebra" }
+program_structure = { path = "../program_structure" }
+json = "0.12.4"
+threadpool = "1.8.1"
+num_cpus = "1.16.0"

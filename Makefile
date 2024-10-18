@@ -12,7 +12,7 @@ endif
 
 ARCH = $(shell uname -m)
 OS = $(shell uname -s | tr '[:upper:]' '[:lower:]')
-LIB_NAME = libcircom_ffi_$(OS)_$(ARCH).a
+LIB_NAME = libcircom_$(OS)_$(ARCH).a
 
 ifeq ($(shell uname -s),darwin)
 	export CGO_LDFLAGS=-framework Foundation -framework SystemConfiguration
@@ -35,12 +35,12 @@ endif
 
 MAKEFLAGS += -j$(NPROCS)
 
-ffi: circom_ffi ### compile circom-ffi bindings
+ffi: circom ### compile circom-ffi bindings
 
-circom_ffi:
-	$(MAKE) -C circom/circom_ffi $(FFI_TARGET)
+circom:
+	$(MAKE) -C circom_ffi/circom $(FFI_TARGET)
 	mkdir -p include/$(OS)_$(ARCH)
-	cp circom/target/release/libcircom_ffi.a include/$(OS)_$(ARCH)/$(LIB_NAME)
+	cp circom_ffi/target/release/libcircom.a include/$(OS)_$(ARCH)/$(LIB_NAME)
 
 generate: ## generate
 	mkdir -p mocks
@@ -84,11 +84,11 @@ tidy: ## add missing and remove unused modules
 	 go mod tidy
 
 format: ## run go & rust formatters
-	$(MAKE) -C circom/circom_ffi format
+	$(MAKE) -C circom/circom format
 	gofumpt -l -w .
 
 clean: ## clean project builds
-	$(MAKE) -C circom/circom_ffi clean
+	$(MAKE) -C circom/circom clean
 	@rm -rf ./build
 	@rm -rf ./include
 

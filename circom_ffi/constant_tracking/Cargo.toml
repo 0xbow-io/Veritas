@@ -1,0 +1,12 @@
+[package]
+name = "constant_tracking"
+version = "2.2.0"
+edition = "2018"
+license = "LGPL-3.0-only"
+description = "Support crate for the Veritas"
+repository = "https://github.com/0xbow.io/veritas"
+authors = [
+  "0xbow.io",
+]
+
+[dependencies]

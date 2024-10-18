@@ -2,119 +2,232 @@ package veritas
 
 import (
 	"fmt"
+	"math/big"
 	"testing"
 
 	"github.com/test-go/testify/require"
 )
 
-func Test_CircomCompiler_Compile(t *testing.T) {
-	circom, err := NewCircomCompiler().Compile(&RunTimeCTX{
-		Version: "2.0.0",
-		Prime:   "bn128",
-		Src: [][2]string{
+var (
+	testProgA = Program{
+		Identity: "A",
+		Src: `
+		template A(ParamA, ParamB){
+			signal input in1;
+			signal input in2;
+			signal output out;
+
+			component b = B(ParamA, ParamB);
+			b.in1 <== in1;
+			b.in2 <== in2;
+
+			out <== b.out;
+		}
+       `,
+	}
+	testProgB = Program{
+		Identity: "B",
+		Src: `
+       	template B(ParamA, ParamB){
+       		signal input in1;
+       		signal input in2;
+       		signal output out;
+
+       		var x = in1 * ParamA;
+       		var b = in2 * ParamB;
+
+       		out <== x + b;
+       	}
+       `,
+	}
+	testProgC = Program{
+		Identity: "Undeclared_Symbol",
+		Src: `
+        template A(){
+			signal input in1;
+			signal input in2;
+			signal output out;
+			out <== in1 * in3;
+		}`,
+	}
+	testProgD = Program{
+		Identity: "UnderConstrained",
+		Src: `
+        template A(){
+			signal input in1;
+			signal input in2;
+			signal output out;
+			out <== 1;
+		}`,
+	}
+)
+
+func Test_Compile(t *testing.T) {
+	var (
+		public_inputs = "in1"
+		params        = "5, 9"
+		lib           = NewEmptyLibrary()
+	)
+
+	reports, err := lib.Compile(CircuitPkg{
+		TargetVersion: "2.0.0",
+		Field:         "bn128",
+		Programs: []Program{
 			{
-				"test.circom",
-				`
-				pragma circom 2.0.0;
-
-				template B(ParamA, ParamB){
-					signal input in1;
-					signal input in2;
-					signal output out;
-
-					var x = in1 * ParamA;
-					var b = in2 * ParamB;
-
-					out <== x + b;
-				}
-
-				template A(ParamA, ParamB){
-					signal input in1;
-					signal input in2;
-					signal output out;
-
-					component b = B(ParamA, ParamB);
-					b.in1 <== in1;
-					b.in2 <== in2;
-
-					out <== b.out;
-				}
-
-				component main {public [in1]}= A(9, 10);
-			`,
+				Identity: "main",
+				Src: fmt.Sprintf("component main {public[%s]}= A(%s);",
+					public_inputs, params),
 			},
-		},
+			testProgA, testProgB},
 	})
 	require.Nil(t, err)
-	require.NotNil(t, circom)
-	circom.Release()
+	require.Len(t, reports, 0)
+	lib.Burn()
 }
 
-func Test_CircomCompiler_Compile_Undeclared_Symbol(t *testing.T) {
-	circom, err := NewCircomCompiler().Compile(&RunTimeCTX{
-		Version: "2.0.0",
-		Prime:   "bn128",
-		Src: [][2]string{
+func Test_Compile_UndeclaredSymbol(t *testing.T) {
+	var (
+		public_inputs = "in1"
+		params        = ""
+		lib           = NewEmptyLibrary()
+	)
+
+	reports, err := lib.Compile(CircuitPkg{
+		TargetVersion: "2.0.0",
+		Field:         "bn128",
+		Programs: []Program{
 			{
-				"test.circom",
-				`
-				pragma circom 2.0.0;
-
-				template A(){
-					signal input in1;
-					signal input in2;
-					signal output out;
-					out <== in1 * in3;
-				}
-
-				component main {public [in1]}= A();
-			`,
+				Identity: "main",
+				Src: fmt.Sprintf("component main {public[%s]}= A(%s);",
+					public_inputs, params),
 			},
-		},
+			testProgC},
 	})
 	require.Nil(t, err)
-	require.Nil(t, circom)
+	require.True(t, len(reports) > 0)
+	print(reports.String())
+	lib.Burn()
 }
 
-func Test_CircomCompiler_Exec(t *testing.T) {
-	// Compile the circuit
-	circom, err := NewCircomCompiler().Compile(&RunTimeCTX{
-		Version: "2.0.0",
-		Prime:   "bn128",
-		Src: [][2]string{
+func Test_Compile_UnderConstrained(t *testing.T) {
+	var (
+		public_inputs = "in1"
+		params        = ""
+		lib           = NewEmptyLibrary()
+	)
+
+	reports, err := lib.Compile(CircuitPkg{
+		TargetVersion: "2.0.0",
+		Field:         "bn128",
+		Programs: []Program{
 			{
-				"main",
-				`
-				pragma circom 2.0.0;
-
-				template Internal() {
-				    signal input in[2];
-				    signal output out;
-				    out <== in[0]*in[1];
-				}
-
-				template Test() {
-				    signal input in[2];
-				    signal output out;
-				    component c = Internal ();
-				    c.in[0] <== in[0];
-				    c.in[1] <== in[1]+2*in[0]+1;
-				    c.out ==> out;
-				}
-
-				component main {public[in]}= Test();
-				`,
+				Identity: "main",
+				Src: fmt.Sprintf("component main {public[%s]}= A(%s);",
+					public_inputs, params),
 			},
-		},
+			testProgD},
 	})
 	require.Nil(t, err)
-	require.NotNil(t, circom)
+	require.True(t, len(reports) > 0)
+	print(reports.String())
+	lib.Burn()
+}
 
-	// Execute the circuit
-	for i := 0; i < 1000; i++ {
-		inputs := fmt.Sprintf(`{"in": ["%d", "%d"]}`, i, i+1)
-		err = circom.Exec([]byte(inputs))
+func Test_Evaluation(t *testing.T) {
+	var (
+		lib = NewEmptyLibrary()
+		// A template
+		// that injects the expected value of x into the circuit
+		// and checks that the constraint is satisfied
+		progA = Program{
+			Identity: "Test",
+			Src: `
+		     template Test(){
+				signal input a;
+				signal input ex;
+
+                signal output b;
+
+                var x = a*a;
+                x += 3;
+
+                0 === ex - x;
+
+                b <== 1;
+            }
+			`}
+		evaluator = func(a *big.Int) *big.Int {
+			const i = 2
+			var x = new(big.Int).Mul(a, a)
+			x.Add(x, big.NewInt(3))
+			return x
+		}
+		expectedSyms = []Symbol{
+			{
+				Symbol:     "main.b",
+				Original:   "1",
+				Witness:    "1",
+				NodeID:     "0",
+				Assignment: big.NewInt(1),
+			},
+			{
+				Symbol:   "main.a",
+				Original: "2",
+				Witness:  "2",
+				NodeID:   "0",
+			},
+			{
+				Symbol:   "main.ex",
+				Original: "3",
+				Witness:  "3",
+				NodeID:   "0",
+			},
+		}
+	)
+
+	reports, err := lib.Compile(CircuitPkg{
+		TargetVersion: "2.0.0",
+		Field:         "bn128",
+		Programs: []Program{
+			{
+				Identity: "main",
+				Src:      `component main {public[a, ex]}= Test();`,
+			},
+			progA},
+	})
+	require.Nil(t, err)
+	require.Len(t, reports, 0)
+
+	for i := 0; i < 10; i++ {
+
+		expectedSyms[2].Assignment = big.NewInt(0).Set(evaluator(big.NewInt(int64(i))))
+		expectedSyms[1].Assignment = big.NewInt(int64(i))
+		input := fmt.Sprintf(`{"a":%d, "ex":%s}`, i, expectedSyms[2].Assignment.String())
+
+		evaluation, err := lib.Evaluate([]byte(input))
+		// Execute the circuit
+		require.Nil(t, err)
+		require.NotNil(t, evaluation)
+
+		// Check for any reports
+		reports, err = lib.GetReports()
+		require.Nil(t, err)
+		require.Len(t, reports, 0)
+
+		// Check that constraints are satisfied
+		require.True(t, len(evaluation.SatisfiedConstraints()) > 0)
+		require.Len(t, evaluation.UnSatisfiedConstraints(), 0)
+
+		//ensure that all symbols are assigned to the correct witness value
+		evaluation.AssignWitToSym()
+
+		for _, sym := range expectedSyms {
+			val := evaluation.GetSymbolAssignment(&sym)
+			require.NotNil(t, val)
+			require.Equal(t, sym.Assignment, val)
+		}
 	}
 
-	circom.Release()
+	// Check that the witness values are correct
+	lib.Burn()
 }

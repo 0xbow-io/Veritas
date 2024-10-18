@@ -1,0 +1,24 @@
+[package]
+name = "constraint_generation"
+version = "2.2.0"
+edition = "2018"
+license = "LGPL-3.0-only"
+description = "Support crate for the Veritas"
+repository = "https://github.com/0xbow.io/veritas"
+authors = [
+  "0xbow.io",
+]
+
+
+
+[dependencies]
+ansi_term = "0.12.1"
+num-bigint-dig = "0.8.4"
+num-traits = "0.2.19"
+
+compiler = { path = "../compiler" }
+circom_algebra = { path = "../circom_algebra" }
+program_structure = { path = "../program_structure" }
+constraint_writers = { path = "../constraint_writers" }
+constraint_list = { path = "../constraint_list" }
+dag = { path = "../dag" }
