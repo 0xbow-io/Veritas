@@ -88,7 +88,7 @@ format: ## run go & rust formatters
 	gofumpt -l -w .
 
 clean: ## clean project builds
-	$(MAKE) -C circom/circom clean
+	$(MAKE) -C circom_ffi/circom clean
 	@rm -rf ./build
 	@rm -rf ./include
 

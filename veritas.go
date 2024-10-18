@@ -180,6 +180,13 @@ func (c ReportCollection) String() (s string) {
 	return
 }
 
+func (c ReportCollection) Print(programs []Program) {
+	for _, r := range c {
+		r.Print(programs)
+	}
+	return
+}
+
 type Report struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
@@ -207,9 +214,9 @@ func (*Report) Default() Report {
 }
 
 func (r *Report) String() (s string) {
-	s += fmt.Sprintf("**\tSeverity: %s\n", r.Severity)
-	s += fmt.Sprintf("**\tCode: %s\n", r.Code)
-	s += fmt.Sprintf("**\tMessage: %s\n", r.Message)
+	s += fmt.Sprintf("Severity: %s\n", r.Severity)
+	s += fmt.Sprintf("Code: %s\n", r.Code)
+	s += fmt.Sprintf("Message: \n\t[%s]\n", r.Message)
 	for _, label := range r.Labels {
 		s += fmt.Sprintf("**\t\tStyle: %s\n", label.Style)
 		s += fmt.Sprintf("**\t\tFileId: %d\n", label.FileId)
@@ -220,6 +227,11 @@ func (r *Report) String() (s string) {
 		s += fmt.Sprintf("**\t\tNote: %s\n", note)
 	}
 	return
+}
+
+func (r *Report) Print(programs []Program) {
+	src := programs[r.Labels[0].FileId].Src[r.Labels[0].Range.Start:r.Labels[0].Range.End]
+	fmt.Printf("%s source: %s", r.String(), src)
 }
 
 type Program struct {
@@ -267,8 +279,8 @@ type lc struct {
 
 func (e *evaluation) ConstrainedSyms() []string {
 	var res []string
-	for _, sym := range e.Symbols.Constrained {
-		res = append(res, sym.Symbol)
+	for i := 1; i < len(e.Symbols.Constrained); i++ {
+		res = append(res, e.Symbols.Constrained[i].Symbol)
 	}
 	return res
 }
