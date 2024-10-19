@@ -23,38 +23,52 @@ any underlying information. " - PKD.
 
 > [!Important]
 > This project is in active development.
+>
 > We are actively seeking contributors to help us improve this project.
+>
 > If you are interested in contributing, please reach out to us.
 
-## Rationale:
+---
 
-> Close the gap between circom and golang.
+# Rationale:
+
+Veritas was built out of necessity for the development of Privacy Pool
+a **compliant** privacy protocol for the EVM. In order to rapidly
+prototype and test our circuits, we needed a more robust toolchain.
+
+Current dev tools for Circom are not as robust as we would like them to be,
+and we believe that there is a lot of room for improvement.
+
+We also believe Golang perfectly complements the Circom DSL but is
+underutilised in the common Circom Dev-Toolchain.
+
+Therefore, we've built Veritas, which is an opinionated Go front-end
+for Circom, which enables the embedding of Circom Circuits within Go projects.
+
+To achieve this, we've decided to fork Circom at v2.2.0 to support the
+[Bus implementation](https://docta.ucm.es/rest/api/core/bitstreams/bab72e69-b6c9-42cc-8ac3-63407eb2a6b6/content).
+and implemented [FFI bindings](https://github.com/0xbow-io/Veritas/tree/main/circom_ffi/circom/src)
+for a continuous pipeline for circuit compilation (from AST to WASM) & evaluation.
+
+---
+
+# How to Use:
+
+> [!Note]
 >
-> Rapidly iterate on your circuit and test your constraints.
+> **Veritas does not replace other Circom DevTools.**
 >
-> Secure, optimise and captilise with Circom.
+> It is a complementary tool that can be used in conjunction
+> with other tools (i.e., Circomkit, Circomspect) to
+> streamline the development and testing of Circom circuits.
 
-We built this out of necessity for the development of Privacy Pool,
-a **compliant** privacy protocol for the EVM.
+## Circuit Package & Library:
 
-Our intention is to promote further innovations for Circom DSL by providing
-Developers with a seamless workflow for engineering secure circuits.
+Veritas considers circom artifacts (i.e. .circom file) as **Programs** w
+hich may include more than 1 templates / functions, etc.
 
-Veritas does not replace other Circom DevTools.
-
-Instead we wish to provide a complementary tool that can be used in conjunction
-with other tools to streamline the development & testing of Circom circuits.
-
-## How to Use:
-
-### Packing Programs into a Circuit Library:
-
-Veritas considers circom files (.circom) as **Programs** which may include more than 1
-templates / functions, etc.
-
-These programs are packaged (CircuitPkg) together to be compiled as a **_Circuit Library._**
-
-A program needs nothing more than it's **Identity** and **Src** to be defined.
+A program is defined by it's **Identity** and **Src** (Circom Code Block).
+These programs are linked when packaged together to be compiled as a _Circuit Library_.
 
 ```Go
 type Program struct {
@@ -77,17 +91,19 @@ via go:embed directive like so:
 var poseidon_ark string
 ```
 
-In the snippet below, we are creating a Circuit Library hat will compile a
-Circuit Package containing 2 programs:
+In the snippet below, we are creating a Circuit Library that will compile a
+Circuit Package, which contains 2 programs:
 
 -   Program 1: The main definition of the circuit.
--   Program 2: The template that will assigned to main.
+-   Program 2: The template that is linked to main.
 
 > [!Tip]
 > You do not need to specify the version pragma or the includes in the program src.
 > Circom will merge templates together as long as they're all within the same package.
 
 ```Go
+
+// Circom Template BLock
 const test_template = `
     template SUM() {
         signal input a, ex;
@@ -97,15 +113,21 @@ const test_template = `
         out <== 1;
     }
 `
+// NewEmptyLibrary() creates a new empty Circuit Library
+// Compile() will compile the Circuit Package
+// and return a collection of warning / error reports
+// if any.
 reports, err := NewEmptyLibrary().Compile(CircuitPkg{
         TargetVersion: "2.0.0",
         Field:         "bn128",
         Programs: []Program{
            	{
           		Identity: "main",
+                // Main Circuit Definition
           		Src:      `component main {public[a, ex]}= Test();`,
            	},
            	{
+                // Contains Code referenced in main
                	Identity: "Test",
                 Src: test_template
             },
@@ -136,31 +158,13 @@ Pkg has been unpacked into Circuit Library .. 2 Programs Available
 
 ### Evaluating the Circuit:
 
-You can evaluate your circuits by simply calling the `Evaluate` method on the circuit object
-with a json strig that contains the input values for the circuit.
-
-The evaluation will output an interface to a data structure which will contain the witness assignments,
-linear constraints, and constrained & unconstrained symbols.
-
-```Go
-type evaluation struct {
-	Field       string   `json:"field"`
-	Assignments []string `json:"assignments"`
-	Constraints lcs      `json:"constraints"`
-	Symbols     struct {
-		Constrained   []Symbol `json:"constrained"`
-		Unconstrained []Symbol `json:"unconstrained"`
-	} `json:"symbols"`
-}
-```
-
-With it you can verify the correctness of your circuit and that constraints are satisfied.
+You can evaluate your circuits by simply calling the `Evaluate` method with a JSON input.
 
 ```Go
 // 100 iterations
 for i := 0; i < 100 i++ {
     // evaluate the circuit per iteration
-    // with a different input value
+    // with different input values
     evaluation, err := lib.Evaluate([]byte(fmt.Sprintf(`{"a":%d, "ex":%s}`, i, i*3)))
     require.Nil(t, err)
     require.NotNil(t, evaluation)
@@ -178,7 +182,37 @@ for i := 0; i < 100 i++ {
 }
 ```
 
-We will be including more examples soon to demonstrate the variety of use cases for Veritas!
+The evaluation will output an interface to a data structure that will contain the witness assignments
+linear constraints, and constrained and unconstrained symbols.
+
+With it, you can verify the correctness of your circuit logic, verify that the right symbols were constrained
+and confirm that all constraints were satisfied.
+
+```Go
+type evaluation struct {
+	Field       string   `json:"field"`
+	Assignments []string `json:"assignments"`
+	Constraints lcs      `json:"constraints"`
+	Symbols     struct {
+		Constrained   []Symbol `json:"constrained"`
+		Unconstrained []Symbol `json:"unconstrained"`
+	} `json:"symbols"`
+}
+
+// linear constraints
+type lc struct {
+	// witness to coefficient mapping
+	A               [][2]string `json:"a_constraints"`
+	B               [][2]string `json:"b_constraints"`
+	C               [][2]string `json:"c_constraints"`
+	// a * b - c
+	Arithmetization [4]string   `json:"arithmetization"`
+	IsSatisfied     string      `json:"satisfied"`
+}
+```
+
+We will be including more [examples](https://github.com/0xbow-io/Veritas/tree/main/examples).
+soon to demonstrate the variety of use cases for Veritas!
 
 ---
 

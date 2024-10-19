@@ -49,7 +49,7 @@ generate: ## generate
 clean-testcache:
 	go clean -testcache
 
-test: clean-testcache rustdeps ## tests
+test: clean-testcache ffi ## tests
 	go test $(GO_TAGS) ./...
 
 test-cached: rustdeps ## tests with existing cache
