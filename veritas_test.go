@@ -68,6 +68,7 @@ func Test_Compile(t *testing.T) {
 		params        = "5, 9"
 		lib           = NewEmptyLibrary()
 	)
+	defer lib.Burn()
 
 	reports, err := lib.Compile(CircuitPkg{
 		TargetVersion: "2.0.0",
@@ -82,7 +83,35 @@ func Test_Compile(t *testing.T) {
 	})
 	require.Nil(t, err)
 	require.Len(t, reports, 0)
-	lib.Burn()
+}
+
+func Test_Compile_Anon(t *testing.T) {
+	var (
+		lib = NewEmptyLibrary()
+	)
+	defer lib.Burn()
+	reports, err := lib.Compile(CircuitPkg{
+		TargetVersion: "2.2.0",
+		Field:         "bn128",
+		Programs: []Program{
+			{
+				Identity: "main",
+				Src:      "component main {public[in1]}= A();",
+			},
+			{
+				Identity: "A",
+				Src: `
+                template A(){
+                    signal input in1;
+                    signal output out;
+                    out <== Anon()(in1);
+          		}`,
+			},
+		},
+	})
+	require.Nil(t, err)
+	require.True(t, len(reports) > 0)
+	print(reports.String())
 }
 
 func Test_Compile_UndeclaredSymbol(t *testing.T) {
@@ -91,6 +120,7 @@ func Test_Compile_UndeclaredSymbol(t *testing.T) {
 		params        = ""
 		lib           = NewEmptyLibrary()
 	)
+	lib.Burn()
 
 	reports, err := lib.Compile(CircuitPkg{
 		TargetVersion: "2.0.0",
@@ -106,7 +136,6 @@ func Test_Compile_UndeclaredSymbol(t *testing.T) {
 	require.Nil(t, err)
 	require.True(t, len(reports) > 0)
 	print(reports.String())
-	lib.Burn()
 }
 
 func Test_Compile_UnderConstrained(t *testing.T) {
@@ -115,6 +144,7 @@ func Test_Compile_UnderConstrained(t *testing.T) {
 		params        = ""
 		lib           = NewEmptyLibrary()
 	)
+	defer lib.Burn()
 
 	reports, err := lib.Compile(CircuitPkg{
 		TargetVersion: "2.0.0",
@@ -130,7 +160,6 @@ func Test_Compile_UnderConstrained(t *testing.T) {
 	require.Nil(t, err)
 	require.True(t, len(reports) > 0)
 	print(reports.String())
-	lib.Burn()
 }
 
 func Test_Evaluation(t *testing.T) {
@@ -184,6 +213,7 @@ func Test_Evaluation(t *testing.T) {
 			},
 		}
 	)
+	defer lib.Burn()
 
 	reports, err := lib.Compile(CircuitPkg{
 		TargetVersion: "2.0.0",
@@ -228,6 +258,4 @@ func Test_Evaluation(t *testing.T) {
 		}
 	}
 
-	// Check that the witness values are correct
-	lib.Burn()
 }

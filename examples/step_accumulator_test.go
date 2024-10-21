@@ -56,7 +56,7 @@ func Test_StepAccumulator(t *testing.T) {
 	})
 	require.Nil(t, err)
 	if len(reports) > 0 {
-		reports.Print(programs)
+		print(reports.String())
 		t.FailNow()
 	}
 

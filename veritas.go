@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"runtime/cgo"
 	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -83,9 +84,56 @@ func unwrapCtx(ctx_handle C.uintptr_t) *_CtxFFI {
 	return ctx
 }
 
+type Program struct {
+	Identity string `json:"identity"`
+	Src      string `json:"src"`
+}
+
+type CircuitPkg struct {
+	TargetVersion string    `json:"target_version"`
+	Field         string    `json:"field"`
+	Programs      []Program `json:"programs"`
+}
+
+func MergePackages(pkgs ...CircuitPkg) (*CircuitPkg, error) {
+	var (
+		ver   = pkgs[0].TargetVersion
+		field = pkgs[0].Field
+		pid   = make(map[string]int) // map of program identity to index
+		p     = &CircuitPkg{
+			TargetVersion: ver,
+			Field:         field,
+			Programs:      make([]Program, 0),
+		}
+	)
+
+	for i, pkg := range pkgs {
+		if pkg.TargetVersion != ver {
+			return nil, errors.New(fmt.Sprintf("version mismatch at index %d", i))
+		}
+		if pkg.Field != field {
+			return nil, errors.New(fmt.Sprintf("field mismatch at index %d", i))
+		}
+		for j, ext := range pkg.Programs {
+
+			if k, ok := pid[ext.Identity]; ok {
+				return nil, errors.New(
+					fmt.Sprintf("possible duplicate program %s at id: %d of program: %d & pkg: %d", ext.Identity, k, j, i),
+				)
+			}
+			pid[ext.Identity] = j
+			p.Programs = append(p.Programs, Program{
+				Identity: ext.Identity,
+				Src:      ext.Src,
+			})
+		}
+	}
+	return p, nil
+}
+
 type CircuitLibrary interface {
 	Evaluate(inputs []byte) (Evaluation, error)
-	Compile(pkg CircuitPkg) (ReportCollection, error)
+	Compile(pkg ...CircuitPkg) (ReportCollection, error)
 	GetReports() (ReportCollection, error)
 
 	Burn()
@@ -99,7 +147,7 @@ func NewEmptyLibrary() CircuitLibrary {
 	return &_CircuitLibrary{mtx: &sync.Mutex{}}
 }
 
-func (lib *_CircuitLibrary) Compile(pkg CircuitPkg) (ReportCollection, error) {
+func (lib *_CircuitLibrary) Compile(pkgs ...CircuitPkg) (ReportCollection, error) {
 	if lib.ctx != nil {
 		return nil, errors.New("FFI Bindings exists, make sure to free them before compiling again")
 	}
@@ -114,7 +162,12 @@ func (lib *_CircuitLibrary) Compile(pkg CircuitPkg) (ReportCollection, error) {
 	)
 	defer ctx_handle.Delete()
 
-	pkgJson, err := json.Marshal(pkg)
+	_pkg, err := MergePackages(pkgs...)
+	if err != nil {
+		return nil, err
+	}
+
+	pkgJson, err := json.Marshal(_pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +181,11 @@ func (lib *_CircuitLibrary) Compile(pkg CircuitPkg) (ReportCollection, error) {
 	// store the context
 	lib.ctx = ctx
 	// return the reports
-	return lib.GetReports()
+	collection, err := lib.GetReports()
+	if err != nil {
+		return nil, err
+	}
+	return collection.Attach(_pkg.Programs), nil
 }
 
 func (lib *_CircuitLibrary) Evaluate(inputs []byte) (Evaluation, error) {
@@ -173,16 +230,16 @@ func (lib *_CircuitLibrary) Burn() {
 
 type ReportCollection []Report
 
-func (c ReportCollection) String() (s string) {
-	for _, r := range c {
-		s += r.String()
+func (c ReportCollection) Attach(programs []Program) ReportCollection {
+	for i := 0; i < len(c); i++ {
+		c[i].Attach(programs)
 	}
-	return
+	return c
 }
 
-func (c ReportCollection) Print(programs []Program) {
+func (c ReportCollection) String() (s string) {
 	for _, r := range c {
-		r.Print(programs)
+		s += r.Detail()
 	}
 	return
 }
@@ -197,8 +254,10 @@ type Report struct {
 		Range  struct {
 			Start int `json:"start"`
 			End   int `json:"end"`
-		}
+		} `json:"range"`
 		Message string `json:"message"`
+		SrcID   string
+		Src     string
 	} `json:"labels"`
 	Notes []string `json:"notes"`
 }
@@ -213,36 +272,47 @@ func (*Report) Default() Report {
 	}
 }
 
-func (r *Report) String() (s string) {
-	s += fmt.Sprintf("Severity: %s\n", r.Severity)
-	s += fmt.Sprintf("Code: %s\n", r.Code)
-	s += fmt.Sprintf("Message: \n\t[%s]\n", r.Message)
-	for _, label := range r.Labels {
-		s += fmt.Sprintf("**\t\tStyle: %s\n", label.Style)
-		s += fmt.Sprintf("**\t\tFileId: %d\n", label.FileId)
-		s += fmt.Sprintf("**\t\tRange: %d-%d\n", label.Range.Start, label.Range.End)
-		s += fmt.Sprintf("**\t\tMessage: %s\n", label.Message)
+func (r *Report) Attach(programs []Program) {
+	for i, label := range r.Labels {
+		min_start := label.Range.Start
+		// work backwards to find the start of the line
+		for min_start > 0 &&
+			programs[label.FileId].Src[min_start] != '\n' &&
+			programs[label.FileId].Src[min_start] != '{' &&
+			programs[label.FileId].Src[min_start] != ';' &&
+			programs[label.FileId].Src[min_start] != '\t' {
+			min_start -= 1
+		}
+		// work forwards to find the end of the line
+		max_end := label.Range.End
+		for max_end < len(programs[label.FileId].Src) &&
+			programs[label.FileId].Src[max_end] != '\n' &&
+			programs[label.FileId].Src[max_end] != '}' &&
+			programs[label.FileId].Src[max_end] != ';' &&
+			programs[label.FileId].Src[max_end] != '\t' {
+			max_end += 1
+		}
+		r.Labels[i].SrcID = programs[label.FileId].Identity
+		r.Labels[i].Src = programs[label.FileId].Src[min_start:max_end]
 	}
-	for _, note := range r.Notes {
-		s += fmt.Sprintf("**\t\tNote: %s\n", note)
+}
+
+func (r *Report) Detail() string {
+	header := fmt.Sprintf("%s[%s]: %s\n", r.Severity, r.Code, r.Message)
+	detail := fmt.Sprintf("\aCaught Report:\n\n%s", header)
+	for i, label := range r.Labels {
+		msg := fmt.Sprintf("%s\n%s%s%s",
+			label.Src,
+			strings.Repeat(" ", len(label.Src)-(label.Range.End-label.Range.Start)),
+			strings.Repeat("^", label.Range.End-label.Range.Start),
+			label.Message,
+		)
+		detail += fmt.Sprintf("\n[%d] %s:%d:%d:\n%s\n", i, label.SrcID, label.Range.Start, label.Range.End, msg)
 	}
-	return
-}
-
-func (r *Report) Print(programs []Program) {
-	src := programs[r.Labels[0].FileId].Src[r.Labels[0].Range.Start:r.Labels[0].Range.End]
-	fmt.Printf("%s source: %s", r.String(), src)
-}
-
-type Program struct {
-	Identity string `json:"identity"`
-	Src      string `json:"src"`
-}
-
-type CircuitPkg struct {
-	TargetVersion string    `json:"target_version"`
-	Field         string    `json:"field"`
-	Programs      []Program `json:"programs"`
+	for i, note := range r.Notes {
+		detail += fmt.Sprintf("**\t\tNote(%d): %s\n", i, note)
+	}
+	return detail
 }
 
 type Evaluation interface {
