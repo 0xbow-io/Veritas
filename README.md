@@ -43,7 +43,7 @@ We also believe Golang perfectly complements the Circom DSL but is
 underutilised in the common Circom Dev-Toolchain.
 
 Therefore, we've built Veritas, which is an opinionated Go front-end
-for Circom, which enables the embedding of Circom Circuits within Go projects.
+for Circom that enables Circom Circuits to be embedded within Go projects.
 
 To achieve this, we've decided to fork Circom at v2.2.0 to support the
 [Bus implementation](https://docta.ucm.es/rest/api/core/bitstreams/bab72e69-b6c9-42cc-8ac3-63407eb2a6b6/content).
@@ -182,10 +182,10 @@ for i := 0; i < 100 i++ {
 }
 ```
 
-The evaluation will output an interface to a data structure that will contain the witness assignments
-linear constraints, and constrained and unconstrained symbols.
+The evaluation will output an interface to a data structure that will contain the witness assignments,
+linear constraints, and constrained & unconstrained symbols.
 
-With it, you can verify the correctness of your circuit logic, verify that the right symbols were constrained
+With it, you can verify the correctness of your circuit logic, that the right symbols were constrained
 and confirm that all constraints were satisfied.
 
 ```Go
